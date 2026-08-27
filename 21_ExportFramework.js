@@ -8,6 +8,8 @@
  *
  * Internal Helpers:
  *   - writeExport_()
+ *   - withExportWriteLock_()
+ *   - writeExportUnlocked_()
  *   - validateExportConfig_()
  *   - formatExportHeader_()
  *   - applyExportFilter_()
@@ -26,6 +28,9 @@
  *   - Generic helpers may be evaluated for Application 40 only after demonstrated reuse; QBO-specific behavior remains in Application 50.
  *
  * Change History:
+ *   - 2026-08-27: Added shared ScriptLock protection around workbook-write
+ *     operations. Overlapping trigger/manual exports may retrieve QBO data in
+ *     parallel, but workbook mutation is serialized through writeExport_().
  *   - 2026-08-23: Removed per-column wrapping from the export framework. Data
  *     rows are now clipped/no-wrap centrally by writeRows_().
  *   - 2026-07-21: Added standardized module documentation. No runtime behavior
@@ -61,6 +66,59 @@
 function writeExport_(config) {
   validateExportConfig_(config);
 
+  return withExportWriteLock_(
+    config.sheetName,
+    function() {
+      return writeExportUnlocked_(config);
+    }
+  );
+}
+
+
+/**
+ * Serializes mutation of the configured export workbook.
+ *
+ * The lock is scoped only to the write/format phase. QBO retrieval and row
+ * construction occur before writeExport_() is called, so separate scheduled
+ * exports do not spend their API-read time blocking one another.
+ *
+ * If another execution is still writing after the configured wait period,
+ * this execution fails clearly rather than allowing concurrent workbook
+ * mutation. Its next scheduled run or a manual rerun can then retry safely.
+ */
+function withExportWriteLock_(sheetName, callback) {
+  if (typeof callback !== 'function') {
+    throw new Error(
+      'withExportWriteLock_ requires a callback function.'
+    );
+  }
+
+  const lock = LockService.getScriptLock();
+  const waitMs = EXPORT_EXECUTION.WRITE_LOCK_WAIT_MS;
+  const acquired = lock.tryLock(waitMs);
+
+  if (!acquired) {
+    throw new Error(
+      'Unable to acquire QBO export workbook write lock within ' +
+      waitMs + ' ms for sheet ' + sheetName + '. ' +
+      'Another export is currently writing. Retry this export after the ' +
+      'other execution finishes.'
+    );
+  }
+
+  try {
+    return callback();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+
+/**
+ * Performs the actual sheet mutation after writeExport_() has acquired the
+ * shared workbook-write lock.
+ */
+function writeExportUnlocked_(config) {
   const sheetName = config.sheetName;
   const headers = config.headers;
   const rows = config.rows || [];
@@ -78,64 +136,62 @@ function writeExport_(config) {
       ? true
       : config.filter;
 
-
   const autoResize =
     config.autoResize === undefined
       ? rows.length <= LARGE_EXPORT_THRESHOLD
       : config.autoResize;
 
-    const maxColumnWidth =
-      config.maxColumnWidth || 300;
+  const maxColumnWidth =
+    config.maxColumnWidth || 300;
 
-    const sheet = upsertSheet_(
-      sheetName,
-      headers
-    );
+  const sheet = upsertSheet_(
+    sheetName,
+    headers
+  );
 
-    writeRows_(sheet, rows);
+  writeRows_(sheet, rows);
 
-    formatExportHeader_(
+  formatExportHeader_(
+    sheet,
+    headers,
+    freezeRows
+  );
+
+  if (useFilter) {
+    applyExportFilter_(
       sheet,
-      headers,
-      freezeRows
+      headers.length,
+      rows.length
     );
+  }
 
-    if (useFilter) {
-      applyExportFilter_(
-        sheet,
-        headers.length,
-        rows.length
-      );
-    }
-
-    if (autoResize && !isLargeExport) {
-      resizeExportColumns_(
+  if (autoResize && !isLargeExport) {
+    resizeExportColumns_(
       sheet,
       headers.length,
       maxColumnWidth
-      );
-    }
-
-    applyExportColumnWidths_(
-      sheet,
-      config.columnWidths || {}
     );
-
-    if (config.numberFormats) {
-      applyExportNumberFormats_(
-        sheet,
-        config.numberFormats,
-        rows.length
-      );
-    }
-
-    if (config.logMessage) {
-      safeLog_(config.logMessage);
-    }
-
-    return sheet;
   }
 
+  applyExportColumnWidths_(
+    sheet,
+    config.columnWidths || {}
+  );
+
+  if (config.numberFormats) {
+    applyExportNumberFormats_(
+      sheet,
+      config.numberFormats,
+      rows.length
+    );
+  }
+
+  if (config.logMessage) {
+    safeLog_(config.logMessage);
+  }
+
+  return sheet;
+}
 
 /**
  * Validates required export configuration values.

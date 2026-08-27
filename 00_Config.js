@@ -21,6 +21,9 @@
  *   - Remains in Application 50 unless a later approved architecture decision assigns a narrower reusable component elsewhere.
  *
  * Change History:
+ *   - 2026-08-27: Added shared export-write locking policy in EXPORT_EXECUTION
+ *     so overlapping trigger/manual writes fail safely instead of writing
+ *     concurrently to the export workbook.
  *   - 2026-08-27: Centralized export display policy (CLIP/no-wrap and standard
  *     data-row height) in EXPORT_LAYOUT for shared use by all exporters.
  *   - 2026-08-27: Centralized Script Property key names in
@@ -104,6 +107,18 @@ const PROJECT_INFO = Object.freeze({
 const EXPORT_LAYOUT = Object.freeze({
   DATA_WRAP_STRATEGY: SpreadsheetApp.WrapStrategy.CLIP,
   DATA_ROW_HEIGHT: 21
+});
+
+/**
+ * Shared execution policy for export workbook writes.
+ *
+ * Individual time-based triggers remain the production scheduling model.
+ * Locking is intentionally scoped to writeExport_() so concurrent QBO reads
+ * may proceed, while only one export table is allowed to mutate the workbook
+ * at a time.
+ */
+const EXPORT_EXECUTION = Object.freeze({
+  WRITE_LOCK_WAIT_MS: 90000
 });
 
 const SHEETS = Object.freeze({
