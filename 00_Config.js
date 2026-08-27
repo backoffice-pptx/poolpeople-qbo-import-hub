@@ -21,6 +21,9 @@
  *   - Remains in Application 50 unless a later approved architecture decision assigns a narrower reusable component elsewhere.
  *
  * Change History:
+ *   - 2026-08-27: Centralized Script Property key names in
+ *     SCRIPT_PROPERTY_KEYS so workbook targeting and QBO credentials do not
+ *     rely on repeated string literals across modules.
  *   - 2026-08-27: Documented QBO_EXPORT_SPREADSHEET_ID as the required
  *     standalone export-workbook Script Property. Runtime resolution remains
  *     centralized in 20_Utils.js.
@@ -43,12 +46,20 @@
  *   QBO_MINORVERSION           Defaults to 75
  ***********************/
 
+const SCRIPT_PROPERTY_KEYS = Object.freeze({
+  CLIENT_ID: 'QBO_CLIENT_ID',
+  CLIENT_SECRET: 'QBO_CLIENT_SECRET',
+  MINOR_VERSION: 'QBO_MINORVERSION',
+  EXPORT_SPREADSHEET_ID: 'QBO_EXPORT_SPREADSHEET_ID'
+});
+
 function getConfig_() {
   const props = PropertiesService.getScriptProperties();
 
-  const clientId = props.getProperty('QBO_CLIENT_ID');
-  const clientSecret = props.getProperty('QBO_CLIENT_SECRET');
-  const minorVersion = props.getProperty('QBO_MINORVERSION') || '75';
+  const clientId = props.getProperty(SCRIPT_PROPERTY_KEYS.CLIENT_ID);
+  const clientSecret = props.getProperty(SCRIPT_PROPERTY_KEYS.CLIENT_SECRET);
+  const minorVersion =
+    props.getProperty(SCRIPT_PROPERTY_KEYS.MINOR_VERSION) || '75';
 
   if (!clientId || !clientSecret) {
     throw new Error(

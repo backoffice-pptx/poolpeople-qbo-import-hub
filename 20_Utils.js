@@ -15,6 +15,7 @@
  *   - None. All functions in this module are internal application helpers.
  *
  * Internal Helpers:
+ *   - getExportSpreadsheetId_()
  *   - getExportSpreadsheet_()
  *   - upsertSheet_()
  *   - writeRows_()
@@ -42,6 +43,9 @@
  *     owned by Application 50.
  *
  * Change History:
+ *   - 2026-08-27: Centralized export workbook resolution behind
+ *     getExportSpreadsheetId_() / getExportSpreadsheet_(); exporter modules
+ *     contain no direct workbook-open logic.
  *   - 2026-08-27: Standalone refactor now resolves the export workbook from the
  *     QBO_EXPORT_SPREADSHEET_ID Script Property instead of relying on an active
  *     container-bound spreadsheet.
@@ -59,29 +63,44 @@
 // =============================================================================
 
 /**
- * Resolves the standalone export workbook.
- *
- * The workbook ID is intentionally stored in Script Properties so the QBO
- * connector remains independent of any container-bound Google Sheet.
+ * Resolves and validates the configured export workbook ID.
  */
-function getExportSpreadsheet_() {
+function getExportSpreadsheetId_() {
   const spreadsheetId = PropertiesService
     .getScriptProperties()
-    .getProperty('QBO_EXPORT_SPREADSHEET_ID');
+    .getProperty(SCRIPT_PROPERTY_KEYS.EXPORT_SPREADSHEET_ID);
 
-  if (!spreadsheetId) {
+  const normalizedId = String(spreadsheetId || '').trim();
+
+  if (!normalizedId) {
     throw new Error(
-      'Missing QBO_EXPORT_SPREADSHEET_ID in Script Properties. ' +
-      'Set it to the Google Sheets spreadsheet ID that should receive QBO exports.'
+      'Missing ' + SCRIPT_PROPERTY_KEYS.EXPORT_SPREADSHEET_ID +
+      ' in Script Properties. Set it to the Google Sheets spreadsheet ID ' +
+      'that should receive QBO exports.'
     );
   }
 
+  return normalizedId;
+}
+
+
+/**
+ * Opens the single configured standalone export workbook.
+ *
+ * All Application 50 workbook access must flow through this helper. Exporter
+ * modules should work with sheet objects returned by the shared framework and
+ * must not independently resolve or open destination workbooks.
+ */
+function getExportSpreadsheet_() {
+  const spreadsheetId = getExportSpreadsheetId_();
+
   try {
-    return SpreadsheetApp.openById(spreadsheetId.trim());
+    return SpreadsheetApp.openById(spreadsheetId);
   } catch (error) {
     throw new Error(
-      'Unable to open QBO export spreadsheet for QBO_EXPORT_SPREADSHEET_ID=' +
-      spreadsheetId + '. Verify the spreadsheet ID and this script account\'s access. ' +
+      'Unable to open QBO export spreadsheet for ' +
+      SCRIPT_PROPERTY_KEYS.EXPORT_SPREADSHEET_ID + '=' + spreadsheetId +
+      '. Verify the spreadsheet ID and this script account\'s access. ' +
       'Original error: ' + error.message
     );
   }
