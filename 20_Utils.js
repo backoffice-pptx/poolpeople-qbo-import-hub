@@ -19,6 +19,7 @@
  *   - getExportSpreadsheet_()
  *   - upsertSheet_()
  *   - writeRows_()
+ *   - applyExportDataLayout_()
  *   - extractMeta_()
  *   - numberOrBlank_()
  *   - jsonStringifySafe_()
@@ -43,6 +44,8 @@
  *     owned by Application 50.
  *
  * Change History:
+ *   - 2026-08-27: Centralized CLIP/no-wrap and standard row-height behavior
+ *     behind applyExportDataLayout_() using the shared EXPORT_LAYOUT policy.
  *   - 2026-08-27: Centralized export workbook resolution behind
  *     getExportSpreadsheetId_() / getExportSpreadsheet_(); exporter modules
  *     contain no direct workbook-open logic.
@@ -159,14 +162,36 @@ function writeRows_(sheet, rows) {
     rows[0].length
   );
 
-  dataRange
-    .setValues(rows)
-    .setWrapStrategy(
-      SpreadsheetApp.WrapStrategy.CLIP
-    );
+  dataRange.setValues(rows);
 
-  // Normalize heights left behind by earlier wrapped exports.
-  sheet.setRowHeights(2, rows.length, 21);
+  applyExportDataLayout_(sheet, dataRange, rows.length);
+}
+
+
+/**
+ * Applies the shared compact display policy to exported data rows.
+ *
+ * Keeping wrapping and standard row height here prevents entity exporters from
+ * drifting into different presentation behavior. It also normalizes heights
+ * that may remain from older exports that previously wrapped long values.
+ */
+function applyExportDataLayout_(sheet, dataRange, rowCount) {
+  if (!sheet || !dataRange || rowCount <= 0) {
+    return;
+  }
+
+  dataRange.setWrapStrategy(
+    EXPORT_LAYOUT.DATA_WRAP_STRATEGY
+  );
+
+  // Force the compact height even when cells contain embedded line breaks.
+  // setRowHeights() allows rows to grow to fit content; the forced variant
+  // is required to guarantee the single-line export layout.
+  sheet.setRowHeightsForced(
+    2,
+    rowCount,
+    EXPORT_LAYOUT.DATA_ROW_HEIGHT
+  );
 }
 
 

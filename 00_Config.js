@@ -21,6 +21,8 @@
  *   - Remains in Application 50 unless a later approved architecture decision assigns a narrower reusable component elsewhere.
  *
  * Change History:
+ *   - 2026-08-27: Centralized export display policy (CLIP/no-wrap and standard
+ *     data-row height) in EXPORT_LAYOUT for shared use by all exporters.
  *   - 2026-08-27: Centralized Script Property key names in
  *     SCRIPT_PROPERTY_KEYS so workbook targeting and QBO credentials do not
  *     rely on repeated string literals across modules.
@@ -89,6 +91,19 @@ const PROJECT_INFO = Object.freeze({
   AUTHOR: 'Pool People',
   API_VERSION: 'v3',
   MIN_EXPORT_FRAMEWORK_VERSION: '1.0.0'
+});
+
+
+/**
+ * Shared spreadsheet display policy for Application 50 exports.
+ *
+ * Entity exporters must not define their own wrapping or standard data-row
+ * height. Those presentation rules belong to the shared export layer so every
+ * QBO export remains compact and consistent.
+ */
+const EXPORT_LAYOUT = Object.freeze({
+  DATA_WRAP_STRATEGY: SpreadsheetApp.WrapStrategy.CLIP,
+  DATA_ROW_HEIGHT: 21
 });
 
 const SHEETS = Object.freeze({
