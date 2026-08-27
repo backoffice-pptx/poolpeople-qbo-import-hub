@@ -1,0 +1,393 @@
+/** ============================================================================
+ * Application : 50 QBO Import Hub
+ * Module      : 21_ExportFramework.js
+ * Purpose     : Reusable export orchestration and table-writing framework for QBO entity exporters.
+ *
+ * Public API:
+ *   - testWriteExport()
+ *
+ * Internal Helpers:
+ *   - writeExport_()
+ *   - validateExportConfig_()
+ *   - formatExportHeader_()
+ *   - applyExportFilter_()
+ *   - resizeExportColumns_()
+ *   - applyExportColumnWidths_()
+ *   - applyExportNumberFormats_()
+ *
+ * Dependencies:
+ *   - Other Application 50 modules as referenced by function calls
+ *   - Google Apps Script services used by this module
+ *
+ * Current Owner:
+ *   - 50 QBO Import Hub
+ *
+ * Future Ownership:
+ *   - Generic helpers may be evaluated for Application 40 only after demonstrated reuse; QBO-specific behavior remains in Application 50.
+ *
+ * Change History:
+ *   - 2026-08-23: Removed per-column wrapping from the export framework. Data
+ *     rows are now clipped/no-wrap centrally by writeRows_().
+ *   - 2026-07-21: Added standardized module documentation. No runtime behavior
+ *     changed.
+ * ============================================================================
+ */
+
+
+/***********************
+ * 21_ExportFramework.gs
+ * Shared QBO export-writing framework
+ ***********************/
+
+/**
+ * Writes a complete export to a Google Sheet.
+ *
+ * Expected config:
+ * {
+ *   sheetName: 'QBO_Items',
+ *   headers: ['Id', 'Name'],
+ *   rows: [[1, 'Example']],
+ *   freezeRows: 1,
+ *   filter: true,
+ *   autoResize: true,
+ *   columnWidths: {
+ *     1: 120,
+ *     2: 300
+ *   },
+ *   maxColumnWidth: 300,
+ *   logMessage: 'Exported 25 QBO items.'
+ * }
+ */
+function writeExport_(config) {
+  validateExportConfig_(config);
+
+  const sheetName = config.sheetName;
+  const headers = config.headers;
+  const rows = config.rows || [];
+
+  const LARGE_EXPORT_THRESHOLD = 5000;
+  const isLargeExport = rows.length > LARGE_EXPORT_THRESHOLD;
+
+  const freezeRows =
+    config.freezeRows === undefined
+      ? 1
+      : config.freezeRows;
+
+  const useFilter =
+    config.filter === undefined
+      ? true
+      : config.filter;
+
+
+  const autoResize =
+    config.autoResize === undefined
+      ? rows.length <= LARGE_EXPORT_THRESHOLD
+      : config.autoResize;
+
+    const maxColumnWidth =
+      config.maxColumnWidth || 300;
+
+    const sheet = upsertSheet_(
+      sheetName,
+      headers
+    );
+
+    writeRows_(sheet, rows);
+
+    formatExportHeader_(
+      sheet,
+      headers,
+      freezeRows
+    );
+
+    if (useFilter) {
+      applyExportFilter_(
+        sheet,
+        headers.length,
+        rows.length
+      );
+    }
+
+    if (autoResize && !isLargeExport) {
+      resizeExportColumns_(
+      sheet,
+      headers.length,
+      maxColumnWidth
+      );
+    }
+
+    applyExportColumnWidths_(
+      sheet,
+      config.columnWidths || {}
+    );
+
+    if (config.numberFormats) {
+      applyExportNumberFormats_(
+        sheet,
+        config.numberFormats,
+        rows.length
+      );
+    }
+
+    if (config.logMessage) {
+      safeLog_(config.logMessage);
+    }
+
+    return sheet;
+  }
+
+
+/**
+ * Validates required export configuration values.
+ */
+function validateExportConfig_(config) {
+  if (!config || typeof config !== 'object') {
+    throw new Error(
+      'writeExport_ requires a configuration object.'
+    );
+  }
+
+  if (!config.sheetName) {
+    throw new Error(
+      'writeExport_ requires sheetName.'
+    );
+  }
+
+  if (
+    !Array.isArray(config.headers) ||
+    config.headers.length === 0
+  ) {
+    throw new Error(
+      'writeExport_ requires a non-empty headers array.'
+    );
+  }
+
+  if (
+    config.rows !== undefined &&
+    !Array.isArray(config.rows)
+  ) {
+    throw new Error(
+      'writeExport_ rows must be an array.'
+    );
+  }
+
+  const expectedWidth = config.headers.length;
+
+  (config.rows || []).forEach(
+    (row, index) => {
+      if (!Array.isArray(row)) {
+        throw new Error(
+          `Row ${index + 1} is not an array.`
+        );
+      }
+
+      if (row.length !== expectedWidth) {
+        throw new Error(
+          `Row ${index + 1} has ${row.length} values, ` +
+          `but ${expectedWidth} headers were supplied.`
+        );
+      }
+    }
+  );
+}
+
+
+/**
+ * Applies consistent header formatting.
+ */
+function formatExportHeader_(
+  sheet,
+  headers,
+  freezeRows
+) {
+  if (freezeRows > 0) {
+    sheet.setFrozenRows(freezeRows);
+  }
+
+  sheet
+    .getRange(1, 1, 1, headers.length)
+    .setFontWeight('bold');
+}
+
+
+/**
+ * Replaces any existing filter with a fresh one.
+ */
+function applyExportFilter_(
+  sheet,
+  columnCount,
+  rowCount
+) {
+  const existingFilter = sheet.getFilter();
+
+  if (existingFilter) {
+    existingFilter.remove();
+  }
+
+  if (rowCount > 0) {
+    sheet
+      .getRange(
+        1,
+        1,
+        rowCount + 1,
+        columnCount
+      )
+      .createFilter();
+  }
+}
+
+
+/**
+ * Auto-resizes columns and enforces a maximum width.
+ */
+function resizeExportColumns_(
+  sheet,
+  columnCount,
+  maxColumnWidth
+) {
+  sheet.autoResizeColumns(
+    1,
+    columnCount
+  );
+
+  for (
+    let column = 1;
+    column <= columnCount;
+    column++
+  ) {
+    const currentWidth =
+      sheet.getColumnWidth(column);
+
+    if (currentWidth > maxColumnWidth) {
+      sheet.setColumnWidth(
+        column,
+        maxColumnWidth
+      );
+    }
+  }
+}
+
+
+/**
+ * Applies explicit column widths.
+ *
+ * Example:
+ * {
+ *   1: 120,
+ *   5: 300
+ * }
+ */
+function applyExportColumnWidths_(
+  sheet,
+  columnWidths
+) {
+  Object.keys(columnWidths)
+    .forEach(columnKey => {
+      const column = Number(columnKey);
+      const width = Number(
+        columnWidths[columnKey]
+      );
+
+      if (
+        Number.isFinite(column) &&
+        Number.isFinite(width)
+      ) {
+        sheet.setColumnWidth(
+          column,
+          width
+        );
+      }
+    });
+}
+
+
+/**
+ * Applies number formats by column.
+ *
+ * Example:
+ * {
+ *   4: '$#,##0.00',
+ *   7: 'yyyy-mm-dd'
+ * }
+ */
+function applyExportNumberFormats_(
+  sheet,
+  numberFormats,
+  rowCount
+) {
+  if (rowCount <= 0) {
+    return;
+  }
+
+  Object.keys(numberFormats)
+    .forEach(columnKey => {
+      const column = Number(columnKey);
+      const format =
+        numberFormats[columnKey];
+
+      if (
+        Number.isFinite(column) &&
+        format
+      ) {
+        sheet
+          .getRange(
+            2,
+            column,
+            rowCount,
+            1
+          )
+          .setNumberFormat(format);
+      }
+    });
+}
+
+
+/**
+ * Temporary test for the shared export framework.
+ *
+ * Creates TEST_ExportFramework and verifies:
+ * - Header formatting
+ * - Filters
+ * - Column widths
+ * - Compact clipped/no-wrap data rows
+ * - Currency formatting
+ * - Date formatting
+ */
+function testWriteExport() {
+  writeExport_({
+    sheetName: 'TEST_ExportFramework',
+    headers: [
+      'Id',
+      'Name',
+      'Amount',
+      'Date',
+      'Notes'
+    ],
+    rows: [
+      [
+        1,
+        'Alpha',
+        125.5,
+        new Date(2026, 6, 17),
+        'Framework test row'
+      ],
+      [
+        2,
+        'Beta',
+        250,
+        new Date(2026, 6, 18),
+        'Second framework test row'
+      ]
+    ],
+    columnWidths: {
+      2: 200,
+      5: 300
+    },
+    numberFormats: {
+      3: '$#,##0.00',
+      4: 'yyyy-mm-dd'
+    },
+    logMessage:
+      'Export framework test completed.'
+  });
+}
