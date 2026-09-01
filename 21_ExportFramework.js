@@ -12,6 +12,7 @@
  *   - withExportWriteLock_()
  *   - writeExportUnlocked_()
  *   - validateExportConfig_()
+ *   - validateExportTableStructure_()
  *   - formatExportHeader_()
  *   - applyExportFilter_()
  *   - resizeExportColumns_()
@@ -29,6 +30,10 @@
  *   - Generic helpers may be evaluated for Application 40 only after demonstrated reuse; QBO-specific behavior remains in Application 50.
  *
  * Change History:
+ *   - 2026-09-01: Added pre-write structural integrity validation for export
+ *     tables. Headers must be non-empty and unique, every row must be a dense
+ *     array with exactly the header width, and unsupported nested cell values
+ *     are rejected before workbook mutation. No export schema changed.
  *   - 2026-08-31: Standardized safe sheet replacement. Export writes now
  *     prepare the existing target without clearing it, write replacement data
  *     and headers first, then clear stale trailing content only after the new
@@ -325,9 +330,12 @@ function validateExportConfig_(config) {
     );
   }
 
-  if (!config.sheetName) {
+  if (
+    typeof config.sheetName !== 'string' ||
+    !config.sheetName.trim()
+  ) {
     throw new Error(
-      'writeExport_ requires sheetName.'
+      'writeExport_ requires a non-empty sheetName string.'
     );
   }
 
@@ -349,25 +357,95 @@ function validateExportConfig_(config) {
     );
   }
 
-  const expectedWidth = config.headers.length;
+  validateExportTableStructure_(
+    config.headers,
+    config.rows || []
+  );
+}
 
-  (config.rows || []).forEach(
-    (row, index) => {
-      if (!Array.isArray(row)) {
+
+/**
+ * Validates the rectangular table result before any workbook mutation occurs.
+ *
+ * Exporters are expected to hand the framework a spreadsheet-ready table:
+ * - every header is a non-empty string;
+ * - header names are unique;
+ * - every row is a dense array with exactly the header width; and
+ * - cells contain scalar spreadsheet values (or Date/null), not nested
+ *   arrays/objects that should have been serialized by the entity exporter.
+ *
+ * This validation is intentionally structural only. It does not interpret QBO
+ * business meaning or impose entity-specific required fields.
+ */
+function validateExportTableStructure_(headers, rows) {
+  const seenHeaders = Object.create(null);
+
+  headers.forEach((header, index) => {
+    if (
+      typeof header !== 'string' ||
+      !header.trim()
+    ) {
+      throw new Error(
+        `Header ${index + 1} must be a non-empty string.`
+      );
+    }
+
+    if (seenHeaders[header]) {
+      throw new Error(
+        `Duplicate export header '${header}' at column ${index + 1}.`
+      );
+    }
+
+    seenHeaders[header] = true;
+  });
+
+  const expectedWidth = headers.length;
+
+  rows.forEach((row, rowIndex) => {
+    if (!Array.isArray(row)) {
+      throw new Error(
+        `Row ${rowIndex + 1} is not an array.`
+      );
+    }
+
+    if (row.length !== expectedWidth) {
+      throw new Error(
+        `Row ${rowIndex + 1} has ${row.length} values, ` +
+        `but ${expectedWidth} headers were supplied.`
+      );
+    }
+
+    for (let columnIndex = 0; columnIndex < expectedWidth; columnIndex++) {
+      if (!Object.prototype.hasOwnProperty.call(row, columnIndex)) {
         throw new Error(
-          `Row ${index + 1} is not an array.`
+          `Row ${rowIndex + 1}, column ${columnIndex + 1} is missing. ` +
+          'Export rows must be dense arrays.'
         );
       }
 
-      if (row.length !== expectedWidth) {
+      const value = row[columnIndex];
+
+      if (value === null || value instanceof Date) {
+        continue;
+      }
+
+      const valueType = typeof value;
+
+      if (
+        valueType !== 'string' &&
+        valueType !== 'number' &&
+        valueType !== 'boolean' &&
+        valueType !== 'undefined'
+      ) {
         throw new Error(
-          `Row ${index + 1} has ${row.length} values, ` +
-          `but ${expectedWidth} headers were supplied.`
+          `Row ${rowIndex + 1}, column ${columnIndex + 1} contains an ` +
+          'unsupported nested value. Serialize arrays/objects before export.'
         );
       }
     }
-  );
+  });
 }
+
 
 
 /**
