@@ -25,6 +25,8 @@
  *     records that execution as failed.
  *
  * Change History:
+ *   - 2026-09-01: Added production preflight validation before a daily queue
+ *     is initialized, so configuration failures stop before any exporter runs.
  *   - 2026-09-01: Added chained daily trigger management for 22 independent
  *     exporters without exceeding Apps Script installable-trigger limits.
  * ============================================================================
@@ -148,7 +150,10 @@ function removeDailyQboExportTriggers() {
  * isolated exporter execution.
  */
 function startDailyQboExportSchedule() {
-  validateDailyQboExportSchedule_();
+  // Validate all read-only production prerequisites before queue state is
+  // created. A failed preflight therefore cannot leave a partially initialized
+  // daily run or launch any exporter.
+  validateQboExportPreflight_();
 
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
