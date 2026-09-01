@@ -46,6 +46,9 @@
  *     owned by Application 50.
  *
  * Change History:
+ *   - 2026-09-01: Added manifest-driven destination workbook resolution.
+ *     Each export may target its own configured workbook while the legacy
+ *     QBO_EXPORT_SPREADSHEET_ID remains an explicit migration fallback.
  *   - 2026-08-31: Replaced destructive pre-write sheet clearing with a
  *     non-destructive prepare/write/cleanup sequence. Existing export content
  *     remains in place until replacement rows and headers have been written;
@@ -72,45 +75,82 @@
 // =============================================================================
 
 /**
- * Resolves and validates the configured export workbook ID.
+ * Resolves and validates the configured destination workbook ID for one export
+ * sheet. During migration, a per-export workbook property takes precedence and
+ * the legacy QBO_EXPORT_SPREADSHEET_ID remains the fallback.
  */
-function getExportSpreadsheetId_() {
-  const spreadsheetId = PropertiesService
-    .getScriptProperties()
-    .getProperty(SCRIPT_PROPERTY_KEYS.EXPORT_SPREADSHEET_ID);
+function getExportSpreadsheetId_(sheetName) {
+  const manifestEntry = getQboExportManifestEntryForSheet_(sheetName);
 
-  const normalizedId = String(spreadsheetId || '').trim();
-
-  if (!normalizedId) {
+  if (!manifestEntry) {
     throw new Error(
-      'Missing ' + SCRIPT_PROPERTY_KEYS.EXPORT_SPREADSHEET_ID +
-      ' in Script Properties. Set it to the Google Sheets spreadsheet ID ' +
-      'that should receive QBO exports.'
+      'Export sheet ' + String(sheetName || '') +
+      ' is not registered in QBO_EXPORT_MANIFEST. Register the sheet before ' +
+      'attempting to resolve its destination workbook.'
     );
   }
 
-  return normalizedId;
+  const props = PropertiesService.getScriptProperties();
+  const destinationPropertyKey = manifestEntry.workbookPropertyKey;
+  const destinationId = String(
+    props.getProperty(destinationPropertyKey) || ''
+  ).trim();
+
+  if (destinationId) {
+    return destinationId;
+  }
+
+  const legacyId = String(
+    props.getProperty(SCRIPT_PROPERTY_KEYS.EXPORT_SPREADSHEET_ID) || ''
+  ).trim();
+
+  if (legacyId) {
+    return legacyId;
+  }
+
+  throw new Error(
+    'Missing destination workbook configuration for export ' +
+    manifestEntry.key + '. Set Script Property ' + destinationPropertyKey +
+    ' to the independent workbook ID. During migration only, ' +
+    SCRIPT_PROPERTY_KEYS.EXPORT_SPREADSHEET_ID +
+    ' may be used as the shared-workbook fallback.'
+  );
 }
 
 
 /**
- * Opens the single configured standalone export workbook.
+ * Opens the configured destination workbook for one export sheet.
  *
- * All Application 50 workbook access must flow through this helper. Exporter
- * modules should work with sheet objects returned by the shared framework and
- * must not independently resolve or open destination workbooks.
+ * All Application 50 workbook access flows through this helper. Exporters do
+ * not contain spreadsheet IDs and do not open destination workbooks directly.
  */
-function getExportSpreadsheet_() {
-  const spreadsheetId = getExportSpreadsheetId_();
+function getExportSpreadsheet_(sheetName) {
+  const manifestEntry = getQboExportManifestEntryForSheet_(sheetName);
+
+  if (!manifestEntry) {
+    throw new Error(
+      'Export sheet ' + String(sheetName || '') +
+      ' is not registered in QBO_EXPORT_MANIFEST.'
+    );
+  }
+
+  const spreadsheetId = getExportSpreadsheetId_(sheetName);
+  const props = PropertiesService.getScriptProperties();
+  const configuredIndependentId = String(
+    props.getProperty(manifestEntry.workbookPropertyKey) || ''
+  ).trim();
+  const resolvedPropertyKey = configuredIndependentId
+    ? manifestEntry.workbookPropertyKey
+    : SCRIPT_PROPERTY_KEYS.EXPORT_SPREADSHEET_ID;
 
   try {
     return SpreadsheetApp.openById(spreadsheetId);
   } catch (error) {
     throw new Error(
       'Unable to open QBO export spreadsheet for ' +
-      SCRIPT_PROPERTY_KEYS.EXPORT_SPREADSHEET_ID + '=' + spreadsheetId +
-      '. Verify the spreadsheet ID and this script account\'s access. ' +
-      'Original error: ' + error.message
+      manifestEntry.key + ' using ' + resolvedPropertyKey + '=' +
+      spreadsheetId + '. Verify the spreadsheet ID and this script ' +
+      'account\'s access. Original error: ' + error.message
     );
   }
 }
@@ -129,7 +169,7 @@ function getExportSpreadsheet_() {
  * @return {Object} Sheet plus previous populated dimensions.
  */
 function prepareExportSheet_(sheetName, rowCount, columnCount) {
-  const spreadsheet = getExportSpreadsheet_();
+  const spreadsheet = getExportSpreadsheet_(sheetName);
 
   const sheet =
     spreadsheet.getSheetByName(sheetName) ||

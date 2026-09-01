@@ -1,14 +1,17 @@
 /** ============================================================================
  * Application : 50 QBO Import Hub
  * Module      : 22_ExportManifest.js
- * Purpose     : Central registry of supported QBO entity exports and the
- *               workbook sheets each exporter owns.
+ * Purpose     : Central registry of supported QBO entity exports, the
+ *               destination workbook key for each exporter, and the workbook
+ *               sheets each exporter owns.
  *
  * Public API:
  *   - getQboExportManifest()
  *
  * Internal Helpers:
  *   - getQboExportManifestEntry_()
+ *   - getQboExportManifestEntryForSheet_()
+ *   - getQboExportWorkbookPropertyKey_()
  *
  * Dependencies:
  *   - Entity export entry points defined in 30_QBO_Customers.js through
@@ -22,11 +25,16 @@
  *     the individual time-based triggers used in production.
  *   - Function names are stored as strings so loading this registry has no
  *     execution side effects and does not create a dependency on 99_TriggeredCalls.js.
+ *   - workbookKey is the stable logical destination used to resolve a
+ *     per-export Script Property during the independent-workbook migration.
  *   - sheetNames lists every table currently written by the exporter. A
  *     multi-sheet exporter remains non-atomic across its individual table
  *     writes; this registry does not change locking or write behavior.
  *
  * Change History:
+ *   - 2026-09-01: Added logical workbookKey metadata and sheet-to-export
+ *     lookup helpers to support incremental migration from one shared export
+ *     workbook to independent per-export workbooks.
  *   - 2026-08-31: Added centralized export manifest/registry after completion
  *     of framework hardening and full entity regression testing. No export
  *     schema, retrieval, scheduling, or write behavior changed.
@@ -39,6 +47,7 @@ const QBO_EXPORT_MANIFEST = Object.freeze([
     category: 'CONTACT',
     entityName: 'Customer',
     exportFunctionName: 'exportQboCustomers',
+    workbookKey: 'CUSTOMERS',
     sheetNames: Object.freeze(['QBO_Customers'])
   }),
   Object.freeze({
@@ -46,6 +55,7 @@ const QBO_EXPORT_MANIFEST = Object.freeze([
     category: 'DIMENSION',
     entityName: 'Preferences',
     exportFunctionName: 'exportQboPreferences',
+    workbookKey: 'PREFERENCES',
     sheetNames: Object.freeze(['QBO_Preferences'])
   }),
   Object.freeze({
@@ -53,6 +63,7 @@ const QBO_EXPORT_MANIFEST = Object.freeze([
     category: 'DIMENSION',
     entityName: 'Item',
     exportFunctionName: 'exportQboItems',
+    workbookKey: 'ITEMS',
     sheetNames: Object.freeze(['QBO_Items', 'QBO_ItemGroupLines'])
   }),
   Object.freeze({
@@ -60,6 +71,7 @@ const QBO_EXPORT_MANIFEST = Object.freeze([
     category: 'DIMENSION',
     entityName: 'Class',
     exportFunctionName: 'exportQboClasses',
+    workbookKey: 'CLASSES',
     sheetNames: Object.freeze(['QBO_Classes'])
   }),
   Object.freeze({
@@ -67,6 +79,7 @@ const QBO_EXPORT_MANIFEST = Object.freeze([
     category: 'DIMENSION',
     entityName: 'Term',
     exportFunctionName: 'exportQboTerms',
+    workbookKey: 'TERMS',
     sheetNames: Object.freeze(['QBO_Terms'])
   }),
   Object.freeze({
@@ -74,6 +87,7 @@ const QBO_EXPORT_MANIFEST = Object.freeze([
     category: 'DIMENSION',
     entityName: 'PaymentMethod',
     exportFunctionName: 'exportQboPaymentMethods',
+    workbookKey: 'PAYMENT_METHODS',
     sheetNames: Object.freeze(['QBO_PaymentMethods'])
   }),
   Object.freeze({
@@ -81,6 +95,7 @@ const QBO_EXPORT_MANIFEST = Object.freeze([
     category: 'DIMENSION',
     entityName: 'TaxCode',
     exportFunctionName: 'exportQboTaxCodes',
+    workbookKey: 'TAX_CODES',
     sheetNames: Object.freeze(['QBO_TaxCodes', 'QBO_TaxCodeRates'])
   }),
   Object.freeze({
@@ -88,6 +103,7 @@ const QBO_EXPORT_MANIFEST = Object.freeze([
     category: 'DIMENSION',
     entityName: 'Department',
     exportFunctionName: 'exportQboDepartments',
+    workbookKey: 'DEPARTMENTS',
     sheetNames: Object.freeze(['QBO_Departments'])
   }),
   Object.freeze({
@@ -95,6 +111,7 @@ const QBO_EXPORT_MANIFEST = Object.freeze([
     category: 'CONTACT',
     entityName: 'Vendor',
     exportFunctionName: 'exportQboVendors',
+    workbookKey: 'VENDORS',
     sheetNames: Object.freeze(['QBO_Vendors'])
   }),
   Object.freeze({
@@ -102,6 +119,7 @@ const QBO_EXPORT_MANIFEST = Object.freeze([
     category: 'DIMENSION',
     entityName: 'Account',
     exportFunctionName: 'exportQboAccounts',
+    workbookKey: 'ACCOUNTS',
     sheetNames: Object.freeze(['QBO_Accounts'])
   }),
   Object.freeze({
@@ -109,6 +127,7 @@ const QBO_EXPORT_MANIFEST = Object.freeze([
     category: 'FINANCIAL',
     entityName: 'Invoice',
     exportFunctionName: 'exportQboInvoices',
+    workbookKey: 'INVOICES',
     sheetNames: Object.freeze(['QBO_Invoices', 'QBO_InvoiceLines'])
   }),
   Object.freeze({
@@ -116,6 +135,7 @@ const QBO_EXPORT_MANIFEST = Object.freeze([
     category: 'FINANCIAL',
     entityName: 'Payment',
     exportFunctionName: 'exportQboPayments',
+    workbookKey: 'PAYMENTS',
     sheetNames: Object.freeze(['QBO_Payments', 'QBO_PaymentApplications'])
   }),
   Object.freeze({
@@ -123,6 +143,7 @@ const QBO_EXPORT_MANIFEST = Object.freeze([
     category: 'FINANCIAL',
     entityName: 'CreditMemo',
     exportFunctionName: 'exportQboCreditMemos',
+    workbookKey: 'CREDIT_MEMOS',
     sheetNames: Object.freeze(['QBO_CreditMemos', 'QBO_CreditMemoLines'])
   }),
   Object.freeze({
@@ -130,6 +151,7 @@ const QBO_EXPORT_MANIFEST = Object.freeze([
     category: 'FINANCIAL',
     entityName: 'Estimate',
     exportFunctionName: 'exportQboEstimates',
+    workbookKey: 'ESTIMATES',
     sheetNames: Object.freeze(['QBO_Estimates', 'QBO_EstimateLines'])
   }),
   Object.freeze({
@@ -137,6 +159,7 @@ const QBO_EXPORT_MANIFEST = Object.freeze([
     category: 'FINANCIAL',
     entityName: 'Bill',
     exportFunctionName: 'exportQboBills',
+    workbookKey: 'BILLS',
     sheetNames: Object.freeze(['QBO_Bills', 'QBO_BillLines'])
   }),
   Object.freeze({
@@ -144,6 +167,7 @@ const QBO_EXPORT_MANIFEST = Object.freeze([
     category: 'FINANCIAL',
     entityName: 'BillPayment',
     exportFunctionName: 'exportQboBillPayments',
+    workbookKey: 'BILL_PAYMENTS',
     sheetNames: Object.freeze(['QBO_BillPayments', 'QBO_BillPaymentApplications'])
   }),
   Object.freeze({
@@ -151,6 +175,7 @@ const QBO_EXPORT_MANIFEST = Object.freeze([
     category: 'FINANCIAL',
     entityName: 'Purchase',
     exportFunctionName: 'exportQboPurchases',
+    workbookKey: 'PURCHASES',
     sheetNames: Object.freeze(['QBO_Purchases', 'QBO_PurchaseLines'])
   }),
   Object.freeze({
@@ -158,6 +183,7 @@ const QBO_EXPORT_MANIFEST = Object.freeze([
     category: 'FINANCIAL',
     entityName: 'Deposit',
     exportFunctionName: 'exportQboDeposits',
+    workbookKey: 'DEPOSITS',
     sheetNames: Object.freeze(['QBO_Deposits', 'QBO_DepositLines'])
   }),
   Object.freeze({
@@ -165,6 +191,7 @@ const QBO_EXPORT_MANIFEST = Object.freeze([
     category: 'FINANCIAL',
     entityName: 'JournalEntry',
     exportFunctionName: 'exportQboJournalEntries',
+    workbookKey: 'JOURNAL_ENTRIES',
     sheetNames: Object.freeze(['QBO_JournalEntries', 'QBO_JournalEntryLines'])
   }),
   Object.freeze({
@@ -172,6 +199,7 @@ const QBO_EXPORT_MANIFEST = Object.freeze([
     category: 'FINANCIAL',
     entityName: 'SalesReceipt',
     exportFunctionName: 'exportQboSalesReceipts',
+    workbookKey: 'SALES_RECEIPTS',
     sheetNames: Object.freeze(['QBO_SalesReceipts', 'QBO_SalesReceiptLines'])
   }),
   Object.freeze({
@@ -179,6 +207,7 @@ const QBO_EXPORT_MANIFEST = Object.freeze([
     category: 'RECURRING',
     entityName: 'RecurringTransaction',
     exportFunctionName: 'exportQboRecurringTransactions',
+    workbookKey: 'RECURRING_TRANSACTIONS',
     sheetNames: Object.freeze([
       'QBO_RecurringTransactions',
       'QBO_RecurringTransactionLines'
@@ -189,6 +218,7 @@ const QBO_EXPORT_MANIFEST = Object.freeze([
     category: 'FINANCIAL',
     entityName: 'RefundReceipt',
     exportFunctionName: 'exportQboRefundReceipts',
+    workbookKey: 'REFUND_RECEIPTS',
     sheetNames: Object.freeze(['QBO_RefundReceipts', 'QBO_RefundReceiptLines'])
   })
 ]);
@@ -206,6 +236,8 @@ function getQboExportManifest() {
       category: entry.category,
       entityName: entry.entityName,
       exportFunctionName: entry.exportFunctionName,
+      workbookKey: entry.workbookKey,
+      workbookPropertyKey: getQboExportWorkbookPropertyKey_(entry.workbookKey),
       sheetNames: entry.sheetNames.slice()
     };
   });
@@ -226,6 +258,8 @@ function getQboExportManifestEntry_(key) {
         category: entry.category,
         entityName: entry.entityName,
         exportFunctionName: entry.exportFunctionName,
+        workbookKey: entry.workbookKey,
+        workbookPropertyKey: getQboExportWorkbookPropertyKey_(entry.workbookKey),
         sheetNames: entry.sheetNames.slice()
       };
     }
@@ -233,6 +267,77 @@ function getQboExportManifestEntry_(key) {
 
   return null;
 }
+
+
+/**
+ * Returns the manifest entry that owns a given export sheet, or null when the
+ * sheet is not registered. Sheet ownership must be unique.
+ */
+function getQboExportManifestEntryForSheet_(sheetName) {
+  const normalizedSheetName = String(sheetName || '').trim();
+
+  if (!normalizedSheetName) {
+    return null;
+  }
+
+  let match = null;
+
+  for (let i = 0; i < QBO_EXPORT_MANIFEST.length; i += 1) {
+    const entry = QBO_EXPORT_MANIFEST[i];
+
+    if (entry.sheetNames.indexOf(normalizedSheetName) === -1) {
+      continue;
+    }
+
+    if (match) {
+      throw new Error(
+        'Export manifest assigns sheet ' + normalizedSheetName +
+        ' to more than one exporter: ' + match.key + ' and ' + entry.key + '.'
+      );
+    }
+
+    match = entry;
+  }
+
+  if (!match) {
+    return null;
+  }
+
+  return {
+    key: match.key,
+    category: match.category,
+    entityName: match.entityName,
+    exportFunctionName: match.exportFunctionName,
+    workbookKey: match.workbookKey,
+    workbookPropertyKey: getQboExportWorkbookPropertyKey_(match.workbookKey),
+    sheetNames: match.sheetNames.slice()
+  };
+}
+
+
+/**
+ * Builds the Script Property name that stores one export workbook ID.
+ */
+function getQboExportWorkbookPropertyKey_(workbookKey) {
+  const normalizedKey = String(workbookKey || '').trim().toUpperCase();
+
+  if (!normalizedKey || !/^[A-Z0-9_]+$/.test(normalizedKey)) {
+    throw new Error(
+      'Invalid QBO export workbook key: ' + String(workbookKey || '') + '.'
+    );
+  }
+
+  return (
+    EXPORT_DESTINATION.PROPERTY_PREFIX +
+    normalizedKey +
+    EXPORT_DESTINATION.PROPERTY_SUFFIX
+  );
+}
+
+/**
+ * Logs the export manifest for human-readable validation in the Apps Script
+ * execution log. This does not call QBO or write to the export workbook.
+ */
 function testQboExportManifest() {
   const manifest = getQboExportManifest();
 
@@ -240,7 +345,8 @@ function testQboExportManifest() {
 
   manifest.forEach(entry => {
     console.log(
-      `${entry.key} | ${entry.exportFunctionName} | ${entry.sheetNames.join(', ')}`
+      `${entry.key} | ${entry.exportFunctionName} | ${entry.workbookPropertyKey} | ` +
+      `${entry.sheetNames.join(', ')}`
     );
   });
 }

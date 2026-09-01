@@ -21,6 +21,9 @@
  *   - Remains in Application 50 unless a later approved architecture decision assigns a narrower reusable component elsewhere.
  *
  * Change History:
+ *   - 2026-09-01: Added independent-workbook destination property naming.
+ *     Per-export workbook properties use QBO_EXPORT_<MANIFEST_KEY>_SPREADSHEET_ID
+ *     while the legacy single-workbook property remains available during migration.
  *   - 2026-09-01: Added centralized QBO pagination safeguards for page size,
  *     maximum pages, and duplicate-page detection.
  *   - 2026-09-01: Added centralized transient QBO request retry policy used by
@@ -62,6 +65,11 @@ const SCRIPT_PROPERTY_KEYS = Object.freeze({
   CLIENT_SECRET: 'QBO_CLIENT_SECRET',
   MINOR_VERSION: 'QBO_MINORVERSION',
   EXPORT_SPREADSHEET_ID: 'QBO_EXPORT_SPREADSHEET_ID'
+});
+
+const EXPORT_DESTINATION = Object.freeze({
+  PROPERTY_PREFIX: 'QBO_EXPORT_',
+  PROPERTY_SUFFIX: '_SPREADSHEET_ID'
 });
 
 const USER_PROPERTY_KEYS = Object.freeze({
