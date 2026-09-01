@@ -21,6 +21,8 @@
  *   - Remains in Application 50 unless a later approved architecture decision assigns a narrower reusable component elsewhere.
  *
  * Change History:
+ *   - 2026-09-01: Added daily export scheduler policy for a chained, one-export-
+ *     per-execution schedule that stays below Apps Script trigger limits.
  *   - 2026-09-01: Added required snapshot-folder configuration and shared
  *     snapshot naming policy for successful independent-workbook exports.
  *   - 2026-09-01: Enforced independent-workbook destination configuration.
@@ -143,6 +145,19 @@ const EXPORT_LAYOUT = Object.freeze({
  */
 const EXPORT_EXECUTION = Object.freeze({
   WRITE_LOCK_WAIT_MS: 90000
+});
+
+/**
+ * Daily export scheduling policy.
+ *
+ * Apps Script limits installable triggers per user/script, so Application 50
+ * uses one durable daily starter trigger plus at most one transient next-export
+ * trigger. Each exporter still runs in its own Apps Script execution.
+ */
+const DAILY_EXPORT_SCHEDULE = Object.freeze({
+  START_HOUR: 0,
+  START_MINUTE: 15,
+  NEXT_EXPORT_DELAY_MS: 2 * 60 * 1000
 });
 
 /**
