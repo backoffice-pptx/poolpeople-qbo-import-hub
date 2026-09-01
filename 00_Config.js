@@ -21,6 +21,8 @@
  *   - Remains in Application 50 unless a later approved architecture decision assigns a narrower reusable component elsewhere.
  *
  * Change History:
+ *   - 2026-09-01: Added centralized QBO pagination safeguards for page size,
+ *     maximum pages, and duplicate-page detection.
  *   - 2026-09-01: Added centralized transient QBO request retry policy used by
  *     the shared HTTP transport boundary.
  *   - 2026-09-01: Centralized the QBO realm user-property key so OAuth and
@@ -139,6 +141,18 @@ const QBO_REQUEST_POLICY = Object.freeze({
   MAX_ATTEMPTS: 3,
   BASE_RETRY_DELAY_MS: 1000,
   MAX_RETRY_DELAY_MS: 10000
+});
+
+/**
+ * Shared pagination safeguards for QBO query exports.
+ *
+ * MAX_PAGES is intentionally generous; it exists to stop a malformed or
+ * repeated-page response from creating an unbounded query loop.
+ */
+const QBO_QUERY_POLICY = Object.freeze({
+  PAGE_SIZE: 1000,
+  MAX_PAGES: 10000,
+  DETECT_DUPLICATE_FULL_PAGES: true
 });
 
 const SHEETS = Object.freeze({

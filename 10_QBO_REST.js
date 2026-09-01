@@ -18,6 +18,7 @@
  *   - qboGetRetryAfterMs_()
  *   - qboComputeRetryDelayMs_()
  *   - qboSleepBeforeRetry_()
+ *   - qboBuildPageIdentity_()
  *
  * Dependencies:
  *   - Other Application 50 modules as referenced by function calls
@@ -30,6 +31,9 @@
  *   - Remains in Application 50 unless a later approved architecture decision assigns a narrower reusable component elsewhere.
  *
  * Change History:
+ *   - 2026-09-01: Added bounded QBO pagination safeguards: centralized page
+ *     sizing, maximum-page protection, response-shape checks, and detection
+ *     of repeated full pages.
  *   - 2026-09-01: Added bounded retry/backoff for QBO HTTP 429/5xx responses
  *     and clearly transient transport failures. Permanent auth, permission,
  *     request, and business/data errors are not retried.
@@ -372,23 +376,49 @@ function qboQueryAllGeneric_(baseQuery, entityName, options) {
     throw new Error('Not authorized. Run startAuth() first.');
   }
 
-  const realmId = getQboRealmId_();
+  const normalizedBaseQuery = String(baseQuery || '').trim();
+  const normalizedEntityName = String(entityName || '').trim();
 
+  if (!normalizedBaseQuery) {
+    throw new Error('QBO query requires a non-empty base query.');
+  }
+
+  if (!normalizedEntityName) {
+    throw new Error('QBO query requires a non-empty entity name.');
+  }
+
+  if (/\bSTARTPOSITION\b|\bMAXRESULTS\b/i.test(normalizedBaseQuery)) {
+    throw new Error(
+      `QBO ${normalizedEntityName} base query must not include ` +
+      'STARTPOSITION or MAXRESULTS; pagination is owned by qboQueryAllGeneric_().'
+    );
+  }
+
+  const realmId = getQboRealmId_();
   const cfg = getConfig_();
   const accessToken = service.getAccessToken();
 
   const allItems = [];
-  const pageSize = 1000;
+  const pageSize = Math.max(1, Number(QBO_QUERY_POLICY.PAGE_SIZE) || 1000);
+  const maxPages = Math.max(1, Number(QBO_QUERY_POLICY.MAX_PAGES) || 1);
+  const seenFullPageIdentities = new Set();
   let startPosition = 1;
   let pageNumber = 0;
   const queryStartedAt = Date.now();
 
   while (true) {
     pageNumber += 1;
-    const pageStartedAt = Date.now();
 
+    if (pageNumber > maxPages) {
+      throw new Error(
+        `QBO ${normalizedEntityName} query exceeded the configured ` +
+        `pagination limit of ${maxPages} pages.`
+      );
+    }
+
+    const pageStartedAt = Date.now();
     const query =
-      `${baseQuery} ` +
+      `${normalizedBaseQuery} ` +
       `STARTPOSITION ${startPosition} ` +
       `MAXRESULTS ${pageSize}`;
 
@@ -412,19 +442,56 @@ function qboQueryAllGeneric_(baseQuery, entityName, options) {
         },
         muteHttpExceptions: true
       },
-      `QBO query ${entityName} page ${pageNumber}`
+      `QBO query ${normalizedEntityName} page ${pageNumber}`
     );
 
-    const items =
-      json.QueryResponse &&
-      Array.isArray(json.QueryResponse[entityName])
-        ? json.QueryResponse[entityName]
-        : [];
+    if (!json || typeof json.QueryResponse !== 'object' || json.QueryResponse === null) {
+      throw new Error(
+        `QBO ${normalizedEntityName} page ${pageNumber} returned no QueryResponse object.`
+      );
+    }
+
+    const entityPayload = json.QueryResponse[normalizedEntityName];
+
+    if (entityPayload !== undefined && !Array.isArray(entityPayload)) {
+      throw new Error(
+        `QBO ${normalizedEntityName} page ${pageNumber} returned an unexpected ` +
+        `${normalizedEntityName} payload type.`
+      );
+    }
+
+    const items = Array.isArray(entityPayload) ? entityPayload : [];
+
+    if (items.length > pageSize) {
+      throw new Error(
+        `QBO ${normalizedEntityName} page ${pageNumber} returned ${items.length} rows, ` +
+        `exceeding requested MAXRESULTS ${pageSize}.`
+      );
+    }
+
+    if (
+      QBO_QUERY_POLICY.DETECT_DUPLICATE_FULL_PAGES &&
+      items.length === pageSize
+    ) {
+      const pageIdentity = qboBuildPageIdentity_(items);
+
+      if (pageIdentity && seenFullPageIdentities.has(pageIdentity)) {
+        throw new Error(
+          `QBO ${normalizedEntityName} pagination repeated a full page at page ` +
+          `${pageNumber} (STARTPOSITION ${startPosition}). Query stopped to avoid ` +
+          'duplicating rows or looping indefinitely.'
+        );
+      }
+
+      if (pageIdentity) {
+        seenFullPageIdentities.add(pageIdentity);
+      }
+    }
 
     allItems.push.apply(allItems, items);
 
     safeLog_(
-      `[PERF] QBO ${entityName} page ${pageNumber}: ` +
+      `[PERF] QBO ${normalizedEntityName} page ${pageNumber}: ` +
       `${items.length} rows in ${Date.now() - pageStartedAt} ms; ` +
       `${allItems.length} cumulative.`
     );
@@ -433,14 +500,47 @@ function qboQueryAllGeneric_(baseQuery, entityName, options) {
       break;
     }
 
-    startPosition += pageSize;
+    const nextStartPosition = startPosition + pageSize;
+
+    if (nextStartPosition <= startPosition) {
+      throw new Error(
+        `QBO ${normalizedEntityName} pagination did not advance from ` +
+        `STARTPOSITION ${startPosition}.`
+      );
+    }
+
+    startPosition = nextStartPosition;
   }
 
   safeLog_(
-    `[PERF] QBO ${entityName} query complete: ` +
+    `[PERF] QBO ${normalizedEntityName} query complete: ` +
     `${allItems.length} rows across ${pageNumber} page(s) in ` +
     `${Date.now() - queryStartedAt} ms.`
   );
 
   return allItems;
+}
+
+/**
+ * Builds a compact identity for a full query page when every row exposes Id.
+ * If an entity does not expose stable Id values, duplicate-page detection is
+ * skipped rather than guessing from mutable business fields.
+ */
+function qboBuildPageIdentity_(items) {
+  if (!Array.isArray(items) || items.length === 0) {
+    return '';
+  }
+
+  const ids = items.map(function(item) {
+    if (!item || item.Id === undefined || item.Id === null) {
+      return null;
+    }
+    return String(item.Id);
+  });
+
+  if (ids.some(function(id) { return id === null; })) {
+    return '';
+  }
+
+  return ids.join('|');
 }
