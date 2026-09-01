@@ -30,6 +30,10 @@
  *   - Generic helpers may be evaluated for Application 40 only after demonstrated reuse; QBO-specific behavior remains in Application 50.
  *
  * Change History:
+ *   - 2026-09-01: Added post-write snapshot creation after the final owned
+ *     sheet of each exporter succeeds. Snapshot creation runs while the export
+ *     write lock is still held so the copied workbook represents the completed
+ *     exporter state without a concurrent write race.
  *   - 2026-09-01: Added pre-write structural integrity validation for export
  *     tables. Headers must be non-empty and unique, every row must be a dense
  *     array with exactly the header width, and unsupported nested cell values
@@ -97,7 +101,11 @@ function writeExport_(config) {
     const sheet = withExportWriteLock_(
       config.sheetName,
       function() {
-        return writeExportUnlocked_(config);
+        const writtenSheet = writeExportUnlocked_(config);
+
+        snapshotQboExportWorkbookAfterFinalSheet_(config.sheetName);
+
+        return writtenSheet;
       }
     );
 

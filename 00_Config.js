@@ -21,6 +21,8 @@
  *   - Remains in Application 50 unless a later approved architecture decision assigns a narrower reusable component elsewhere.
  *
  * Change History:
+ *   - 2026-09-01: Added required snapshot-folder configuration and shared
+ *     snapshot naming policy for successful independent-workbook exports.
  *   - 2026-09-01: Enforced independent-workbook destination configuration.
  *     Each export now requires QBO_EXPORT_<MANIFEST_KEY>_SPREADSHEET_ID; the
  *     legacy shared-workbook fallback has been retired.
@@ -66,7 +68,8 @@
 const SCRIPT_PROPERTY_KEYS = Object.freeze({
   CLIENT_ID: 'QBO_CLIENT_ID',
   CLIENT_SECRET: 'QBO_CLIENT_SECRET',
-  MINOR_VERSION: 'QBO_MINORVERSION'
+  MINOR_VERSION: 'QBO_MINORVERSION',
+  SNAPSHOT_FOLDER_ID: 'QBO_EXPORT_SNAPSHOT_FOLDER_ID'
 });
 
 const EXPORT_DESTINATION = Object.freeze({
@@ -140,6 +143,17 @@ const EXPORT_LAYOUT = Object.freeze({
  */
 const EXPORT_EXECUTION = Object.freeze({
   WRITE_LOCK_WAIT_MS: 90000
+});
+
+/**
+ * Shared snapshot policy for successful independent-workbook exports.
+ *
+ * Snapshot copies are created only after the final owned sheet for an exporter
+ * has been written successfully. The snapshot filename uses the current source
+ * workbook name plus a timestamp in the Apps Script project time zone.
+ */
+const EXPORT_SNAPSHOT = Object.freeze({
+  TIMESTAMP_FORMAT: 'yyyyMMdd_HHmmss'
 });
 
 /**
