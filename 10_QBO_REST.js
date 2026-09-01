@@ -13,6 +13,11 @@
  *   - qboRequestJson_()
  *   - qboParseJsonResponse_()
  *   - qboFormatFaultDetails_()
+ *   - qboIsRetryableHttpStatus_()
+ *   - qboIsRetryableTransportError_()
+ *   - qboGetRetryAfterMs_()
+ *   - qboComputeRetryDelayMs_()
+ *   - qboSleepBeforeRetry_()
  *
  * Dependencies:
  *   - Other Application 50 modules as referenced by function calls
@@ -25,6 +30,9 @@
  *   - Remains in Application 50 unless a later approved architecture decision assigns a narrower reusable component elsewhere.
  *
  * Change History:
+ *   - 2026-09-01: Added bounded retry/backoff for QBO HTTP 429/5xx responses
+ *     and clearly transient transport failures. Permanent auth, permission,
+ *     request, and business/data errors are not retried.
  *   - 2026-09-01: Centralized QBO HTTP/JSON response validation and QBO Fault
  *     formatting so REST callers report failures consistently with request
  *     context. No retry policy was added; retries remain Objective 11.
@@ -82,8 +90,157 @@ function qboGet_(path) {
  * Objective 11 may add retry/backoff here without changing entity exporters.
  */
 function qboRequestJson_(url, fetchOptions, context) {
-  const response = UrlFetchApp.fetch(url, fetchOptions);
-  return qboParseJsonResponse_(response, context);
+  const requestContext = String(context || 'QBO request').trim() || 'QBO request';
+  const maxAttempts = Math.max(1, Number(QBO_REQUEST_POLICY.MAX_ATTEMPTS) || 1);
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    let response;
+
+    try {
+      response = UrlFetchApp.fetch(url, fetchOptions);
+    } catch (error) {
+      const retryable = qboIsRetryableTransportError_(error);
+
+      if (!retryable || attempt >= maxAttempts) {
+        throw new Error(
+          `${requestContext} transport failure after ${attempt} attempt(s): ` +
+          `${error && error.message ? error.message : String(error)}`
+        );
+      }
+
+      qboSleepBeforeRetry_(requestContext, attempt, null, error);
+      continue;
+    }
+
+    const status = response.getResponseCode();
+
+    if (
+      qboIsRetryableHttpStatus_(status) &&
+      attempt < maxAttempts
+    ) {
+      qboSleepBeforeRetry_(requestContext, attempt, response, null);
+      continue;
+    }
+
+    return qboParseJsonResponse_(response, requestContext);
+  }
+
+  throw new Error(`${requestContext} failed without a terminal response.`);
+}
+
+
+/**
+ * Returns true only for HTTP statuses that are safe to retry automatically.
+ */
+function qboIsRetryableHttpStatus_(status) {
+  return status === 429 || (status >= 500 && status <= 599);
+}
+
+
+/**
+ * Returns true for clearly transient UrlFetch transport/service failures.
+ *
+ * The matcher is intentionally conservative so coding/configuration errors
+ * such as invalid arguments or malformed URLs are not retried repeatedly.
+ */
+function qboIsRetryableTransportError_(error) {
+  const message = String(
+    error && error.message ? error.message : error || ''
+  ).toLowerCase();
+
+  if (!message) {
+    return false;
+  }
+
+  const transientMarkers = [
+    'timed out',
+    'timeout',
+    'temporarily unavailable',
+    'temporary failure',
+    'service unavailable',
+    'internal error',
+    'connection reset',
+    'socket',
+    'address unavailable',
+    'service invoked too many times'
+  ];
+
+  return transientMarkers.some(function(marker) {
+    return message.indexOf(marker) !== -1;
+  });
+}
+
+
+/**
+ * Reads Retry-After when QBO supplies it. Supports integer seconds.
+ */
+function qboGetRetryAfterMs_(response) {
+  if (!response || typeof response.getHeaders !== 'function') {
+    return null;
+  }
+
+  const headers = response.getHeaders() || {};
+  let retryAfter = null;
+
+  Object.keys(headers).some(function(name) {
+    if (String(name).toLowerCase() === 'retry-after') {
+      retryAfter = headers[name];
+      return true;
+    }
+    return false;
+  });
+
+  const seconds = Number(retryAfter);
+
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    return null;
+  }
+
+  return Math.round(seconds * 1000);
+}
+
+
+/**
+ * Calculates bounded exponential backoff, honoring Retry-After when present.
+ */
+function qboComputeRetryDelayMs_(attempt, response) {
+  const configuredBase = Math.max(
+    0,
+    Number(QBO_REQUEST_POLICY.BASE_RETRY_DELAY_MS) || 0
+  );
+  const configuredMax = Math.max(
+    configuredBase,
+    Number(QBO_REQUEST_POLICY.MAX_RETRY_DELAY_MS) || configuredBase
+  );
+  const retryAfterMs = qboGetRetryAfterMs_(response);
+
+  if (retryAfterMs !== null) {
+    return Math.min(retryAfterMs, configuredMax);
+  }
+
+  const exponentialDelay = configuredBase * Math.pow(2, Math.max(0, attempt - 1));
+  return Math.min(exponentialDelay, configuredMax);
+}
+
+
+/**
+ * Logs and sleeps before the next bounded retry attempt.
+ */
+function qboSleepBeforeRetry_(context, attempt, response, error) {
+  const delayMs = qboComputeRetryDelayMs_(attempt, response);
+  const status = response ? response.getResponseCode() : null;
+  const reason = status !== null
+    ? `HTTP ${status}`
+    : (error && error.message ? error.message : 'transient transport failure');
+
+  safeLog_(
+    `${LOG_PREFIX.WARN} ${context} transient failure on attempt ${attempt}: ` +
+    `${reason}. Retrying in ${delayMs} ms.`
+  );
+
+  if (delayMs > 0) {
+    Utilities.sleep(delayMs);
+  }
 }
 
 

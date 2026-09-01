@@ -21,6 +21,8 @@
  *   - Remains in Application 50 unless a later approved architecture decision assigns a narrower reusable component elsewhere.
  *
  * Change History:
+ *   - 2026-09-01: Added centralized transient QBO request retry policy used by
+ *     the shared HTTP transport boundary.
  *   - 2026-09-01: Centralized the QBO realm user-property key so OAuth and
  *     REST helpers share one definition instead of repeating QBO_REALM_ID.
  *   - 2026-08-27: Added shared export-write locking policy in EXPORT_EXECUTION
@@ -125,6 +127,18 @@ const EXPORT_LAYOUT = Object.freeze({
  */
 const EXPORT_EXECUTION = Object.freeze({
   WRITE_LOCK_WAIT_MS: 90000
+});
+
+/**
+ * Shared transient-request retry policy for QBO HTTP calls.
+ *
+ * MAX_ATTEMPTS includes the initial request. Only explicitly retryable HTTP
+ * statuses and clearly transient transport failures are retried.
+ */
+const QBO_REQUEST_POLICY = Object.freeze({
+  MAX_ATTEMPTS: 3,
+  BASE_RETRY_DELAY_MS: 1000,
+  MAX_RETRY_DELAY_MS: 10000
 });
 
 const SHEETS = Object.freeze({
