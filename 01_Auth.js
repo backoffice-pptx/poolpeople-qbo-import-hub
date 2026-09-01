@@ -12,7 +12,9 @@
  *   - testCompanyInfo()
  *
  * Internal Helpers:
- *   - None
+ *   - getQboRealmId_()
+ *   - setQboRealmId_()
+ *   - clearQboRealmId_()
  *
  * Dependencies:
  *   - Other Application 50 modules as referenced by function calls
@@ -25,6 +27,8 @@
  *   - Remains in Application 50 unless a later approved architecture decision assigns a narrower reusable component elsewhere.
  *
  * Change History:
+ *   - 2026-09-01: Centralized QBO realm ID read/write/delete behavior behind
+ *     shared auth helpers using USER_PROPERTY_KEYS.REALM_ID.
  *   - 2026-07-21: Added standardized module documentation. No runtime behavior
  *     changed.
  * ============================================================================
@@ -53,6 +57,51 @@ function getQboService() {
 }
 
 
+
+/**
+ * Returns the authorized QBO company realm ID stored for the current user.
+ */
+function getQboRealmId_() {
+  const realmId = PropertiesService
+    .getUserProperties()
+    .getProperty(USER_PROPERTY_KEYS.REALM_ID);
+
+  const normalizedRealmId = String(realmId || '').trim();
+
+  if (!normalizedRealmId) {
+    throw new Error('Missing realmId. Re-authorize the app.');
+  }
+
+  return normalizedRealmId;
+}
+
+
+/**
+ * Stores the authorized QBO company realm ID for the current user.
+ */
+function setQboRealmId_(realmId) {
+  const normalizedRealmId = String(realmId || '').trim();
+
+  if (!normalizedRealmId) {
+    throw new Error('Cannot store an empty QBO realmId.');
+  }
+
+  PropertiesService
+    .getUserProperties()
+    .setProperty(USER_PROPERTY_KEYS.REALM_ID, normalizedRealmId);
+}
+
+
+/**
+ * Clears the stored QBO company realm ID for the current user.
+ */
+function clearQboRealmId_() {
+  PropertiesService
+    .getUserProperties()
+    .deleteProperty(USER_PROPERTY_KEYS.REALM_ID);
+}
+
+
 /**
  * Logs the redirect URI that must be entered
  * in the Intuit developer app.
@@ -78,9 +127,7 @@ function authCallback(request) {
   const authorized = service.handleCallback(request);
 
   if (authorized && request?.parameter?.realmId) {
-    PropertiesService
-      .getUserProperties()
-      .setProperty('QBO_REALM_ID', request.parameter.realmId);
+    setQboRealmId_(request.parameter.realmId);
   }
 
   return HtmlService.createHtmlOutput(
@@ -95,9 +142,7 @@ function authCallback(request) {
 function resetAuth() {
   getQboService().reset();
 
-  PropertiesService
-    .getUserProperties()
-    .deleteProperty('QBO_REALM_ID');
+  clearQboRealmId_();
 
   safeLog_('QBO authorization reset.');
 }
@@ -111,13 +156,7 @@ function testCompanyInfo() {
     throw new Error('Not authorized. Run startAuth() first.');
   }
 
-  const realmId = PropertiesService
-    .getUserProperties()
-    .getProperty('QBO_REALM_ID');
-
-  if (!realmId) {
-    throw new Error('Missing realmId. Re-authorize the app.');
-  }
+  const realmId = getQboRealmId_();
 
   const cfg = getConfig_();
 

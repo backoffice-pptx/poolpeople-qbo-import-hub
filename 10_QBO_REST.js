@@ -22,6 +22,8 @@
  *   - Remains in Application 50 unless a later approved architecture decision assigns a narrower reusable component elsewhere.
  *
  * Change History:
+ *   - 2026-09-01: Reused the centralized QBO realm ID helper instead of
+ *     reading the QBO_REALM_ID user property directly in REST functions.
  *   - 2026-08-27: Added page-level and total query performance diagnostics for timeout analysis. No query behavior changed.
  *   - 2026-07-21: Added standardized module documentation. No runtime behavior
  *     changed.
@@ -47,13 +49,7 @@ function qboGet_(path) {
     throw new Error('Not authorized. Run startAuth() first.');
   }
 
-  const realmId = PropertiesService
-    .getUserProperties()
-    .getProperty('QBO_REALM_ID');
-
-  if (!realmId) {
-    throw new Error('Missing realmId. Re-authorize the app.');
-  }
+  const realmId = getQboRealmId_();
 
   const cfg = getConfig_();
   const url = `${cfg.qboBase}${realmId}/${path}`;
@@ -126,13 +122,7 @@ function qboQueryAllGeneric_(baseQuery, entityName, options) {
     throw new Error('Not authorized. Run startAuth() first.');
   }
 
-  const realmId = PropertiesService
-    .getUserProperties()
-    .getProperty('QBO_REALM_ID');
-
-  if (!realmId) {
-    throw new Error('Missing realmId. Re-authorize the app.');
-  }
+  const realmId = getQboRealmId_();
 
   const cfg = getConfig_();
   const accessToken = service.getAccessToken();

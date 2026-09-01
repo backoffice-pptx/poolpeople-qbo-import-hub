@@ -21,6 +21,8 @@
  *   - Remains in Application 50 unless a later approved architecture decision assigns a narrower reusable component elsewhere.
  *
  * Change History:
+ *   - 2026-09-01: Centralized the QBO realm user-property key so OAuth and
+ *     REST helpers share one definition instead of repeating QBO_REALM_ID.
  *   - 2026-08-27: Added shared export-write locking policy in EXPORT_EXECUTION
  *     so overlapping trigger/manual writes fail safely instead of writing
  *     concurrently to the export workbook.
@@ -56,6 +58,10 @@ const SCRIPT_PROPERTY_KEYS = Object.freeze({
   CLIENT_SECRET: 'QBO_CLIENT_SECRET',
   MINOR_VERSION: 'QBO_MINORVERSION',
   EXPORT_SPREADSHEET_ID: 'QBO_EXPORT_SPREADSHEET_ID'
+});
+
+const USER_PROPERTY_KEYS = Object.freeze({
+  REALM_ID: 'QBO_REALM_ID'
 });
 
 function getConfig_() {
