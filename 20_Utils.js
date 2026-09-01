@@ -17,7 +17,9 @@
  * Internal Helpers:
  *   - getExportSpreadsheetId_()
  *   - getExportSpreadsheet_()
- *   - upsertSheet_()
+ *   - prepareExportSheet_()
+ *   - writeExportHeader_()
+ *   - clearStaleExportContent_()
  *   - writeRows_()
  *   - applyExportDataLayout_()
  *   - extractMeta_()
@@ -44,6 +46,10 @@
  *     owned by Application 50.
  *
  * Change History:
+ *   - 2026-08-31: Replaced destructive pre-write sheet clearing with a
+ *     non-destructive prepare/write/cleanup sequence. Existing export content
+ *     remains in place until replacement rows and headers have been written;
+ *     stale trailing content is cleared only after the new table is complete.
  *   - 2026-08-27: Centralized CLIP/no-wrap and standard row-height behavior
  *     behind applyExportDataLayout_() using the shared EXPORT_LAYOUT policy.
  *   - 2026-08-27: Centralized export workbook resolution behind
@@ -111,35 +117,97 @@ function getExportSpreadsheet_() {
 
 
 /**
- * Creates a sheet when missing, clears the populated export range,
- * writes the header row, and freezes row 1.
+ * Prepares the target export sheet without clearing existing content.
  *
- * Clearing only populated cells avoids making Google Sheets process the entire
- * allocated grid when a sheet has accumulated excess blank rows/columns.
+ * The previous populated dimensions are captured so stale trailing content can
+ * be removed only after the replacement export has been written successfully.
+ * This avoids destroying the last successful export before the new data write.
+ *
+ * @param {string} sheetName Target sheet name.
+ * @param {number} rowCount Number of replacement data rows.
+ * @param {number} columnCount Number of replacement columns.
+ * @return {Object} Sheet plus previous populated dimensions.
  */
-function upsertSheet_(sheetName, headers) {
+function prepareExportSheet_(sheetName, rowCount, columnCount) {
   const spreadsheet = getExportSpreadsheet_();
 
   const sheet =
     spreadsheet.getSheetByName(sheetName) ||
     spreadsheet.insertSheet(sheetName);
 
-  const lastRow = sheet.getLastRow();
-  const lastColumn = sheet.getLastColumn();
+  const previousLastRow = sheet.getLastRow();
+  const previousLastColumn = sheet.getLastColumn();
+  const requiredRows = Math.max(1, Number(rowCount || 0) + 1);
+  const requiredColumns = Math.max(1, Number(columnCount || 0));
 
-  if (lastRow > 0 && lastColumn > 0) {
-    sheet
-      .getRange(1, 1, lastRow, lastColumn)
-      .clearContent();
+  if (sheet.getMaxRows() < requiredRows) {
+    sheet.insertRowsAfter(
+      sheet.getMaxRows(),
+      requiredRows - sheet.getMaxRows()
+    );
   }
 
+  if (sheet.getMaxColumns() < requiredColumns) {
+    sheet.insertColumnsAfter(
+      sheet.getMaxColumns(),
+      requiredColumns - sheet.getMaxColumns()
+    );
+  }
+
+  return {
+    sheet: sheet,
+    previousLastRow: previousLastRow,
+    previousLastColumn: previousLastColumn
+  };
+}
+
+
+/**
+ * Writes the replacement header row after replacement data rows have succeeded.
+ */
+function writeExportHeader_(sheet, headers) {
   sheet
     .getRange(1, 1, 1, headers.length)
     .setValues([headers]);
+}
 
-  sheet.setFrozenRows(1);
 
-  return sheet;
+/**
+ * Clears content that belonged to the prior export but falls outside the new
+ * table dimensions. This runs only after the new rows, header, and formatting
+ * have completed successfully.
+ */
+function clearStaleExportContent_(
+  sheet,
+  previousLastRow,
+  previousLastColumn,
+  rowCount,
+  columnCount
+) {
+  const newLastRow = Number(rowCount || 0) + 1;
+  const newLastColumn = Number(columnCount || 0);
+
+  if (previousLastRow > newLastRow && previousLastColumn > 0) {
+    sheet
+      .getRange(
+        newLastRow + 1,
+        1,
+        previousLastRow - newLastRow,
+        Math.max(previousLastColumn, newLastColumn)
+      )
+      .clearContent();
+  }
+
+  if (previousLastColumn > newLastColumn && previousLastRow > 0) {
+    sheet
+      .getRange(
+        1,
+        newLastColumn + 1,
+        previousLastRow,
+        previousLastColumn - newLastColumn
+      )
+      .clearContent();
+  }
 }
 
 

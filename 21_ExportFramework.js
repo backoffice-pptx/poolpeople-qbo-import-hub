@@ -29,6 +29,10 @@
  *   - Generic helpers may be evaluated for Application 40 only after demonstrated reuse; QBO-specific behavior remains in Application 50.
  *
  * Change History:
+ *   - 2026-08-31: Standardized safe sheet replacement. Export writes now
+ *     prepare the existing target without clearing it, write replacement data
+ *     and headers first, then clear stale trailing content only after the new
+ *     table and formatting succeed. Sheet identity/name are preserved.
  *   - 2026-08-31: Standardized table-export lifecycle logging in writeExport_()
  *     with START, COMPLETE, and ERROR events including export ID, sheet name,
  *     row/column counts, and elapsed time. No export schema or write behavior
@@ -236,14 +240,19 @@ function writeExportUnlocked_(config) {
   const maxColumnWidth =
     config.maxColumnWidth || 300;
 
-  const sheet = upsertSheet_(
+  const sheetState = prepareExportSheet_(
     sheetName,
-    headers
+    rows.length,
+    headers.length
   );
-  logWriteStep_('upsert/header reset');
+  const sheet = sheetState.sheet;
+  logWriteStep_('sheet prepare');
 
   writeRows_(sheet, rows);
   logWriteStep_(`writeRows total (${rows.length} rows)`);
+
+  writeExportHeader_(sheet, headers);
+  logWriteStep_('header values');
 
   formatExportHeader_(
     sheet,
@@ -284,6 +293,15 @@ function writeExportUnlocked_(config) {
     );
     logWriteStep_('number formats');
   }
+
+  clearStaleExportContent_(
+    sheet,
+    sheetState.previousLastRow,
+    sheetState.previousLastColumn,
+    rows.length,
+    headers.length
+  );
+  logWriteStep_('stale content cleanup');
 
   safeLog_(
     `[PERF] ${sheetName} write complete: ${rows.length} rows in ` +
