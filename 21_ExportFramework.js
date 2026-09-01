@@ -8,6 +8,7 @@
  *
  * Internal Helpers:
  *   - writeExport_()
+ *   - logExportEvent_()
  *   - withExportWriteLock_()
  *   - writeExportUnlocked_()
  *   - validateExportConfig_()
@@ -28,6 +29,10 @@
  *   - Generic helpers may be evaluated for Application 40 only after demonstrated reuse; QBO-specific behavior remains in Application 50.
  *
  * Change History:
+ *   - 2026-08-31: Standardized table-export lifecycle logging in writeExport_()
+ *     with START, COMPLETE, and ERROR events including export ID, sheet name,
+ *     row/column counts, and elapsed time. No export schema or write behavior
+ *     changed.
  *   - 2026-08-27: Added per-step workbook-write performance diagnostics for timeout analysis. No export schema changed.
  *   - 2026-08-27: Added shared ScriptLock protection around workbook-write
  *     operations. Overlapping trigger/manual exports may retrieve QBO data in
@@ -65,14 +70,90 @@
  * }
  */
 function writeExport_(config) {
-  validateExportConfig_(config);
+  const exportId = Utilities.getUuid();
+  const startedAt = Date.now();
 
-  return withExportWriteLock_(
-    config.sheetName,
-    function() {
-      return writeExportUnlocked_(config);
-    }
-  );
+  try {
+    validateExportConfig_(config);
+
+    const metadata = {
+      exportId: exportId,
+      sheetName: config.sheetName,
+      rowCount: (config.rows || []).length,
+      columnCount: config.headers.length
+    };
+
+    logExportEvent_('START', metadata);
+
+    const sheet = withExportWriteLock_(
+      config.sheetName,
+      function() {
+        return writeExportUnlocked_(config);
+      }
+    );
+
+    logExportEvent_('COMPLETE', {
+      exportId: metadata.exportId,
+      sheetName: metadata.sheetName,
+      rowCount: metadata.rowCount,
+      columnCount: metadata.columnCount,
+      durationMs: Date.now() - startedAt
+    });
+
+    return sheet;
+  } catch (error) {
+    logExportEvent_('ERROR', {
+      exportId: exportId,
+      sheetName:
+        config && config.sheetName
+          ? config.sheetName
+          : '(unknown)',
+      rowCount:
+        config && Array.isArray(config.rows)
+          ? config.rows.length
+          : '',
+      columnCount:
+        config && Array.isArray(config.headers)
+          ? config.headers.length
+          : '',
+      durationMs: Date.now() - startedAt,
+      errorMessage:
+        error && error.message
+          ? error.message
+          : String(error)
+    });
+
+    throw error;
+  }
+}
+
+
+/**
+ * Writes one standardized table-export lifecycle event.
+ *
+ * These events provide a stable operational layer above the more detailed
+ * [PERF] diagnostics. They intentionally describe one writeExport_() table
+ * write, not an entire multi-sheet entity export.
+ */
+function logExportEvent_(status, metadata) {
+  const parts = [
+    '[EXPORT]',
+    status,
+    `id=${metadata.exportId || ''}`,
+    `sheet=${metadata.sheetName || ''}`,
+    `rows=${metadata.rowCount === '' ? '' : metadata.rowCount}`,
+    `columns=${metadata.columnCount === '' ? '' : metadata.columnCount}`
+  ];
+
+  if (metadata.durationMs !== undefined) {
+    parts.push(`durationMs=${metadata.durationMs}`);
+  }
+
+  if (metadata.errorMessage) {
+    parts.push(`error=${metadata.errorMessage}`);
+  }
+
+  safeLog_(parts.join(' | '));
 }
 
 
