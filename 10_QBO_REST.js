@@ -10,6 +10,9 @@
  *   - qboGet_()
  *   - qboFetchAll_()
  *   - qboQueryAllGeneric_()
+ *   - qboRequestJson_()
+ *   - qboParseJsonResponse_()
+ *   - qboFormatFaultDetails_()
  *
  * Dependencies:
  *   - Other Application 50 modules as referenced by function calls
@@ -22,6 +25,9 @@
  *   - Remains in Application 50 unless a later approved architecture decision assigns a narrower reusable component elsewhere.
  *
  * Change History:
+ *   - 2026-09-01: Centralized QBO HTTP/JSON response validation and QBO Fault
+ *     formatting so REST callers report failures consistently with request
+ *     context. No retry policy was added; retries remain Objective 11.
  *   - 2026-09-01: Reused the centralized QBO realm ID helper instead of
  *     reading the QBO_REALM_ID user property directly in REST functions.
  *   - 2026-08-27: Added page-level and total query performance diagnostics for timeout analysis. No query behavior changed.
@@ -54,25 +60,103 @@ function qboGet_(path) {
   const cfg = getConfig_();
   const url = `${cfg.qboBase}${realmId}/${path}`;
 
-  const response = UrlFetchApp.fetch(url, {
-    method: 'get',
-    headers: {
-      Authorization: 'Bearer ' + service.getAccessToken(),
-      Accept: 'application/json'
+  return qboRequestJson_(
+    url,
+    {
+      method: 'get',
+      headers: {
+        Authorization: 'Bearer ' + service.getAccessToken(),
+        Accept: 'application/json'
+      },
+      muteHttpExceptions: true
     },
-    muteHttpExceptions: true
-  });
+    `QBO GET ${path}`
+  );
+}
 
+
+/**
+ * Executes one QBO HTTP request and returns parsed JSON.
+ *
+ * This is the single-request transport boundary used by REST and GraphQL.
+ * Objective 11 may add retry/backoff here without changing entity exporters.
+ */
+function qboRequestJson_(url, fetchOptions, context) {
+  const response = UrlFetchApp.fetch(url, fetchOptions);
+  return qboParseJsonResponse_(response, context);
+}
+
+
+/**
+ * Validates one QBO HTTP response and returns parsed JSON.
+ *
+ * HTTP failures, malformed JSON, and Intuit Fault details are normalized into
+ * one consistent error format while preserving the caller-provided context.
+ */
+function qboParseJsonResponse_(response, context) {
+  const requestContext = String(context || 'QBO request').trim() || 'QBO request';
   const status = response.getResponseCode();
+  const responseText = response.getContentText() || '';
+  let parsed = {};
+
+  if (responseText) {
+    try {
+      parsed = JSON.parse(responseText);
+    } catch (error) {
+      throw new Error(
+        `${requestContext} returned invalid JSON. ` +
+        `HTTP ${status}: ${responseText.slice(0, 1000)}`
+      );
+    }
+  }
 
   if (status < 200 || status >= 300) {
+    const faultDetails = qboFormatFaultDetails_(parsed);
+    const fallbackDetails = responseText.slice(0, 1000);
+    const details = faultDetails || fallbackDetails || 'No response body.';
+
     throw new Error(
-      `QBO GET failed for ${path}. ` +
-      `HTTP ${status}: ${response.getContentText().slice(0, 1000)}`
+      `${requestContext} failed. HTTP ${status}: ${details}`
     );
   }
 
-  return JSON.parse(response.getContentText());
+  return parsed;
+}
+
+
+/**
+ * Returns a compact human-readable description of an Intuit Fault payload.
+ */
+function qboFormatFaultDetails_(parsed) {
+  const errors = parsed && parsed.Fault && Array.isArray(parsed.Fault.Error)
+    ? parsed.Fault.Error
+    : [];
+
+  if (errors.length === 0) {
+    return '';
+  }
+
+  return errors.map(function(error) {
+    const parts = [];
+
+    if (error && error.code) {
+      parts.push(`code=${error.code}`);
+    }
+
+    if (error && error.Message) {
+      parts.push(error.Message);
+    }
+
+    if (error && error.Detail) {
+      parts.push(error.Detail);
+    }
+
+    if (error && error.element) {
+      parts.push(`element=${error.element}`);
+    }
+
+    return parts.join(' | ');
+  }).filter(Boolean).join(' || ').slice(0, 1000);
 }
 
 
@@ -100,7 +184,16 @@ function qboFetchAll_(urls) {
     };
   });
 
-  return UrlFetchApp.fetchAll(requests);
+  const responses = UrlFetchApp.fetchAll(requests);
+
+  responses.forEach(function(response, index) {
+    qboParseJsonResponse_(
+      response,
+      `QBO parallel GET ${index + 1} of ${responses.length}`
+    );
+  });
+
+  return responses;
 }
 
 /**
@@ -152,25 +245,18 @@ function qboQueryAllGeneric_(baseQuery, entityName, options) {
       `&minorversion=${cfg.minorVersion}` +
       extraParams;
 
-    const response = UrlFetchApp.fetch(url, {
-      method: 'get',
-      headers: {
-        Authorization: 'Bearer ' + accessToken,
-        Accept: 'application/json'
+    const json = qboRequestJson_(
+      url,
+      {
+        method: 'get',
+        headers: {
+          Authorization: 'Bearer ' + accessToken,
+          Accept: 'application/json'
+        },
+        muteHttpExceptions: true
       },
-      muteHttpExceptions: true
-    });
-
-    const status = response.getResponseCode();
-
-    if (status < 200 || status >= 300) {
-      throw new Error(
-        `QBO query failed for ${entityName}. ` +
-        `HTTP ${status}: ${response.getContentText().slice(0, 1000)}`
-      );
-    }
-
-    const json = JSON.parse(response.getContentText());
+      `QBO query ${entityName} page ${pageNumber}`
+    );
 
     const items =
       json.QueryResponse &&

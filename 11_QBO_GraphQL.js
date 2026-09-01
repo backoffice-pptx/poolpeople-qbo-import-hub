@@ -21,6 +21,8 @@
  *   - Remains in Application 50 unless a later approved architecture decision assigns a narrower reusable component elsewhere.
  *
  * Change History:
+ *   - 2026-09-01: Reused centralized QBO HTTP/JSON response validation while
+ *     preserving GraphQL-specific semantic error checks.
  *   - 2026-07-21: Added standardized module documentation. No runtime behavior
  *     changed.
  * ============================================================================
@@ -68,41 +70,23 @@ function qboGraphQL_(query, variables) {
     );
   }
 
-  const response = UrlFetchApp.fetch(QBO_ENDPOINTS.GRAPHQL, {
-    method: 'post',
-    contentType: 'application/json',
-    headers: {
-      Authorization: 'Bearer ' + service.getAccessToken(),
-      Accept: 'application/json'
+  const parsed = qboRequestJson_(
+    QBO_ENDPOINTS.GRAPHQL,
+    {
+      method: 'post',
+      contentType: 'application/json',
+      headers: {
+        Authorization: 'Bearer ' + service.getAccessToken(),
+        Accept: 'application/json'
+      },
+      payload: JSON.stringify({
+        query: query,
+        variables: variables || {}
+      }),
+      muteHttpExceptions: true
     },
-    payload: JSON.stringify({
-      query: query,
-      variables: variables || {}
-    }),
-    muteHttpExceptions: true
-  });
-
-  const statusCode = response.getResponseCode();
-  const responseText = response.getContentText();
-
-  let parsed;
-
-  try {
-    parsed = responseText ? JSON.parse(responseText) : {};
-  } catch (error) {
-    throw new Error(
-      'QBO GraphQL returned invalid JSON. ' +
-      'HTTP ' + statusCode + ': ' +
-      responseText.substring(0, 1000)
-    );
-  }
-
-  if (statusCode < 200 || statusCode >= 300) {
-    throw new Error(
-      'QBO GraphQL HTTP error ' + statusCode + ': ' +
-      JSON.stringify(parsed)
-    );
-  }
+    'QBO GraphQL request'
+  );
 
   if (parsed.errors && parsed.errors.length > 0) {
     throw new Error(
