@@ -162,7 +162,14 @@ function writeRows_(sheet, rows) {
     rows[0].length
   );
 
+  const sheetName = sheet.getName();
+
+  let perfStartedAt = Date.now();
   dataRange.setValues(rows);
+  safeLog_(
+    `[PERF] ${sheetName} write setValues (${rows.length} rows): ` +
+    `${Date.now() - perfStartedAt} ms.`
+  );
 
   applyExportDataLayout_(sheet, dataRange, rows.length);
 }
@@ -180,17 +187,29 @@ function applyExportDataLayout_(sheet, dataRange, rowCount) {
     return;
   }
 
+  const sheetName = sheet.getName();
+
+  let perfStartedAt = Date.now();
   dataRange.setWrapStrategy(
     EXPORT_LAYOUT.DATA_WRAP_STRATEGY
+  );
+  safeLog_(
+    `[PERF] ${sheetName} write CLIP wrap strategy (${rowCount} rows): ` +
+    `${Date.now() - perfStartedAt} ms.`
   );
 
   // Force the compact height even when cells contain embedded line breaks.
   // setRowHeights() allows rows to grow to fit content; the forced variant
   // is required to guarantee the single-line export layout.
+  perfStartedAt = Date.now();
   sheet.setRowHeightsForced(
     2,
     rowCount,
     EXPORT_LAYOUT.DATA_ROW_HEIGHT
+  );
+  safeLog_(
+    `[PERF] ${sheetName} write forced row heights (${rowCount} rows): ` +
+    `${Date.now() - perfStartedAt} ms.`
   );
 }
 

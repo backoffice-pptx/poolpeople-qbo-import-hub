@@ -22,6 +22,7 @@
  *   - Remains in Application 50 unless a later approved architecture decision assigns a narrower reusable component elsewhere.
  *
  * Change History:
+ *   - 2026-08-27: Added page-level and total query performance diagnostics for timeout analysis. No query behavior changed.
  *   - 2026-07-21: Added standardized module documentation. No runtime behavior
  *     changed.
  * ============================================================================
@@ -139,8 +140,13 @@ function qboQueryAllGeneric_(baseQuery, entityName, options) {
   const allItems = [];
   const pageSize = 1000;
   let startPosition = 1;
+  let pageNumber = 0;
+  const queryStartedAt = Date.now();
 
   while (true) {
+    pageNumber += 1;
+    const pageStartedAt = Date.now();
+
     const query =
       `${baseQuery} ` +
       `STARTPOSITION ${startPosition} ` +
@@ -184,12 +190,24 @@ function qboQueryAllGeneric_(baseQuery, entityName, options) {
 
     allItems.push.apply(allItems, items);
 
+    safeLog_(
+      `[PERF] QBO ${entityName} page ${pageNumber}: ` +
+      `${items.length} rows in ${Date.now() - pageStartedAt} ms; ` +
+      `${allItems.length} cumulative.`
+    );
+
     if (items.length < pageSize) {
       break;
     }
 
     startPosition += pageSize;
   }
+
+  safeLog_(
+    `[PERF] QBO ${entityName} query complete: ` +
+    `${allItems.length} rows across ${pageNumber} page(s) in ` +
+    `${Date.now() - queryStartedAt} ms.`
+  );
 
   return allItems;
 }

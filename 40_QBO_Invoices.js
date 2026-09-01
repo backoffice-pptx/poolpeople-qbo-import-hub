@@ -24,6 +24,7 @@
  *   - Remains in Application 50 unless a later approved architecture decision assigns a narrower reusable component elsewhere.
  *
  * Change History:
+ *   - 2026-08-27: Added parent/line row-build performance diagnostics for timeout analysis. No export schema changed.
  *   - 2026-07-21: Added standardized module documentation. No runtime behavior
  *     changed.
  * ============================================================================
@@ -309,7 +310,12 @@ function exportQboInvoices() {
   //
   // Parent Invoices
   //
+  const parentBuildStartedAt = Date.now();
   const invoiceRows = buildInvoiceRows_(invoices);
+  safeLog_(
+    `[PERF] Invoice parent row build: ${invoiceRows.length} rows in ` +
+    `${Date.now() - parentBuildStartedAt} ms.`
+  );
 
   writeExport_({
   sheetName: 'QBO_Invoices',
@@ -356,7 +362,12 @@ function exportQboInvoices() {
   //
   // Invoice Lines
   //
+  const lineBuildStartedAt = Date.now();
   const invoiceLineRows = buildInvoiceLineRows_(invoices);
+  safeLog_(
+    `[PERF] Invoice line row build: ${invoiceLineRows.length} rows in ` +
+    `${Date.now() - lineBuildStartedAt} ms.`
+  );
 
   writeExport_({
   sheetName: 'QBO_InvoiceLines',

@@ -28,6 +28,7 @@
  *   - Generic helpers may be evaluated for Application 40 only after demonstrated reuse; QBO-specific behavior remains in Application 50.
  *
  * Change History:
+ *   - 2026-08-27: Added per-step workbook-write performance diagnostics for timeout analysis. No export schema changed.
  *   - 2026-08-27: Added shared ScriptLock protection around workbook-write
  *     operations. Overlapping trigger/manual exports may retrieve QBO data in
  *     parallel, but workbook mutation is serialized through writeExport_().
@@ -122,6 +123,16 @@ function writeExportUnlocked_(config) {
   const sheetName = config.sheetName;
   const headers = config.headers;
   const rows = config.rows || [];
+  const writeStartedAt = Date.now();
+  let stepStartedAt = writeStartedAt;
+
+  function logWriteStep_(stepName) {
+    const now = Date.now();
+    safeLog_(
+      `[PERF] ${sheetName} write ${stepName}: ${now - stepStartedAt} ms.`
+    );
+    stepStartedAt = now;
+  }
 
   const LARGE_EXPORT_THRESHOLD = 5000;
   const isLargeExport = rows.length > LARGE_EXPORT_THRESHOLD;
@@ -148,14 +159,17 @@ function writeExportUnlocked_(config) {
     sheetName,
     headers
   );
+  logWriteStep_('upsert/header reset');
 
   writeRows_(sheet, rows);
+  logWriteStep_(`writeRows total (${rows.length} rows)`);
 
   formatExportHeader_(
     sheet,
     headers,
     freezeRows
   );
+  logWriteStep_('header formatting');
 
   if (useFilter) {
     applyExportFilter_(
@@ -163,6 +177,7 @@ function writeExportUnlocked_(config) {
       headers.length,
       rows.length
     );
+    logWriteStep_('filter');
   }
 
   if (autoResize && !isLargeExport) {
@@ -171,12 +186,14 @@ function writeExportUnlocked_(config) {
       headers.length,
       maxColumnWidth
     );
+    logWriteStep_('auto resize');
   }
 
   applyExportColumnWidths_(
     sheet,
     config.columnWidths || {}
   );
+  logWriteStep_('configured column widths');
 
   if (config.numberFormats) {
     applyExportNumberFormats_(
@@ -184,7 +201,13 @@ function writeExportUnlocked_(config) {
       config.numberFormats,
       rows.length
     );
+    logWriteStep_('number formats');
   }
+
+  safeLog_(
+    `[PERF] ${sheetName} write complete: ${rows.length} rows in ` +
+    `${Date.now() - writeStartedAt} ms.`
+  );
 
   if (config.logMessage) {
     safeLog_(config.logMessage);
