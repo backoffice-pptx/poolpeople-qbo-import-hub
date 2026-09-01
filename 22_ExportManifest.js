@@ -34,6 +34,9 @@
  *     writes; this registry does not change locking or write behavior.
  *
  * Change History:
+ *   - 2026-09-01: Enforced independent-only destination diagnostics after
+ *     successful provisioning of all export workbooks; legacy fallback status
+ *     is no longer part of readiness evaluation.
  *   - 2026-09-01: Added idempotent independent-workbook provisioning and
  *     destination-routing diagnostics for controlled migration.
  *   - 2026-09-01: Added logical workbookKey metadata and sheet-to-export
@@ -428,17 +431,13 @@ function provisionQboIndependentExportWorkbooks() {
 
 
 /**
- * Logs current per-export destination configuration without calling QBO or
- * writing export data. This is a migration/readiness diagnostic.
+ * Logs current per-export independent destination configuration without
+ * calling QBO or writing export data. This is a readiness diagnostic.
  */
 function testQboExportDestinationRouting() {
   const props = PropertiesService.getScriptProperties();
-  const legacyId = String(
-    props.getProperty(SCRIPT_PROPERTY_KEYS.EXPORT_SPREADSHEET_ID) || ''
-  ).trim();
   const manifest = getQboExportManifest();
   let independentCount = 0;
-  let fallbackCount = 0;
   let missingCount = 0;
 
   manifest.forEach(function(entry) {
@@ -446,15 +445,11 @@ function testQboExportDestinationRouting() {
       props.getProperty(entry.workbookPropertyKey) || ''
     ).trim();
 
-    let mode;
+    const mode = independentId ? 'INDEPENDENT' : 'MISSING';
+
     if (independentId) {
-      mode = 'INDEPENDENT';
       independentCount += 1;
-    } else if (legacyId) {
-      mode = 'LEGACY_FALLBACK';
-      fallbackCount += 1;
     } else {
-      mode = 'MISSING';
       missingCount += 1;
     }
 
@@ -468,10 +463,17 @@ function testQboExportDestinationRouting() {
   console.log(
     '[DESTINATION] | STATUS | exports=' + manifest.length +
     ' | independent=' + independentCount +
-    ' | fallback=' + fallbackCount +
     ' | missing=' + missingCount
   );
+
+  if (missingCount > 0) {
+    throw new Error(
+      'Independent workbook destination validation failed: ' +
+      missingCount + ' export destination(s) are not configured.'
+    );
+  }
 }
+
 
 
 /**

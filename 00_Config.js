@@ -21,9 +21,11 @@
  *   - Remains in Application 50 unless a later approved architecture decision assigns a narrower reusable component elsewhere.
  *
  * Change History:
+ *   - 2026-09-01: Enforced independent-workbook destination configuration.
+ *     Each export now requires QBO_EXPORT_<MANIFEST_KEY>_SPREADSHEET_ID; the
+ *     legacy shared-workbook fallback has been retired.
  *   - 2026-09-01: Added independent-workbook destination property naming.
- *     Per-export workbook properties use QBO_EXPORT_<MANIFEST_KEY>_SPREADSHEET_ID
- *     while the legacy single-workbook property remains available during migration.
+ *     Per-export workbook properties use QBO_EXPORT_<MANIFEST_KEY>_SPREADSHEET_ID.
  *   - 2026-09-01: Added centralized QBO pagination safeguards for page size,
  *     maximum pages, and duplicate-page detection.
  *   - 2026-09-01: Added centralized transient QBO request retry policy used by
@@ -54,7 +56,8 @@
  * Required Script Properties:
  *   QBO_CLIENT_ID
  *   QBO_CLIENT_SECRET
- *   QBO_EXPORT_SPREADSHEET_ID  Google Sheets file ID receiving all QBO exports
+ *   QBO_EXPORT_<MANIFEST_KEY>_SPREADSHEET_ID
+ *     One configured Google Sheets file ID per export manifest entry.
  *
  * Optional Script Properties:
  *   QBO_MINORVERSION           Defaults to 75
@@ -63,8 +66,7 @@
 const SCRIPT_PROPERTY_KEYS = Object.freeze({
   CLIENT_ID: 'QBO_CLIENT_ID',
   CLIENT_SECRET: 'QBO_CLIENT_SECRET',
-  MINOR_VERSION: 'QBO_MINORVERSION',
-  EXPORT_SPREADSHEET_ID: 'QBO_EXPORT_SPREADSHEET_ID'
+  MINOR_VERSION: 'QBO_MINORVERSION'
 });
 
 const EXPORT_DESTINATION = Object.freeze({

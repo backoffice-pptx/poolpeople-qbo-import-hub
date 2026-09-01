@@ -46,9 +46,11 @@
  *     owned by Application 50.
  *
  * Change History:
+ *   - 2026-09-01: Enforced manifest-driven independent workbook resolution.
+ *     Each export must have its own configured destination property; the
+ *     legacy shared-workbook fallback has been retired.
  *   - 2026-09-01: Added manifest-driven destination workbook resolution.
- *     Each export may target its own configured workbook while the legacy
- *     QBO_EXPORT_SPREADSHEET_ID remains an explicit migration fallback.
+ *     Each export may target its own configured workbook.
  *   - 2026-08-31: Replaced destructive pre-write sheet clearing with a
  *     non-destructive prepare/write/cleanup sequence. Existing export content
  *     remains in place until replacement rows and headers have been written;
@@ -75,9 +77,9 @@
 // =============================================================================
 
 /**
- * Resolves and validates the configured destination workbook ID for one export
- * sheet. During migration, a per-export workbook property takes precedence and
- * the legacy QBO_EXPORT_SPREADSHEET_ID remains the fallback.
+ * Resolves and validates the configured independent destination workbook ID
+ * for one export sheet. Every registered export requires its own configured
+ * workbook property; no shared-workbook fallback is permitted.
  */
 function getExportSpreadsheetId_(sheetName) {
   const manifestEntry = getQboExportManifestEntryForSheet_(sheetName);
@@ -96,30 +98,20 @@ function getExportSpreadsheetId_(sheetName) {
     props.getProperty(destinationPropertyKey) || ''
   ).trim();
 
-  if (destinationId) {
-    return destinationId;
+  if (!destinationId) {
+    throw new Error(
+      'Missing independent destination workbook configuration for export ' +
+      manifestEntry.key + '. Set Script Property ' + destinationPropertyKey +
+      ' to the workbook ID before running this export.'
+    );
   }
 
-  const legacyId = String(
-    props.getProperty(SCRIPT_PROPERTY_KEYS.EXPORT_SPREADSHEET_ID) || ''
-  ).trim();
-
-  if (legacyId) {
-    return legacyId;
-  }
-
-  throw new Error(
-    'Missing destination workbook configuration for export ' +
-    manifestEntry.key + '. Set Script Property ' + destinationPropertyKey +
-    ' to the independent workbook ID. During migration only, ' +
-    SCRIPT_PROPERTY_KEYS.EXPORT_SPREADSHEET_ID +
-    ' may be used as the shared-workbook fallback.'
-  );
+  return destinationId;
 }
 
 
 /**
- * Opens the configured destination workbook for one export sheet.
+ * Opens the configured independent destination workbook for one export sheet.
  *
  * All Application 50 workbook access flows through this helper. Exporters do
  * not contain spreadsheet IDs and do not open destination workbooks directly.
@@ -135,25 +127,19 @@ function getExportSpreadsheet_(sheetName) {
   }
 
   const spreadsheetId = getExportSpreadsheetId_(sheetName);
-  const props = PropertiesService.getScriptProperties();
-  const configuredIndependentId = String(
-    props.getProperty(manifestEntry.workbookPropertyKey) || ''
-  ).trim();
-  const resolvedPropertyKey = configuredIndependentId
-    ? manifestEntry.workbookPropertyKey
-    : SCRIPT_PROPERTY_KEYS.EXPORT_SPREADSHEET_ID;
 
   try {
     return SpreadsheetApp.openById(spreadsheetId);
   } catch (error) {
     throw new Error(
       'Unable to open QBO export spreadsheet for ' +
-      manifestEntry.key + ' using ' + resolvedPropertyKey + '=' +
+      manifestEntry.key + ' using ' + manifestEntry.workbookPropertyKey + '=' +
       spreadsheetId + '. Verify the spreadsheet ID and this script ' +
       'account\'s access. Original error: ' + error.message
     );
   }
 }
+
 
 
 /**
