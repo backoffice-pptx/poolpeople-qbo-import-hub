@@ -8,7 +8,6 @@
  *   - testQboSnapshotConfiguration()
  *
  * Internal Helpers:
- *   - snapshotQboExportWorkbookAfterFinalSheet_()
  *   - createQboExportSnapshot_()
  *   - getQboExportSnapshotFolder_()
  *   - buildQboExportSnapshotName_()
@@ -25,8 +24,9 @@
  *   - CURRENT workbooks remain the live refresh targets.
  *   - Every successful exporter run creates a new immutable workbook copy in
  *     the configured SNAPSHOTS folder.
- *   - For multi-sheet exporters, a snapshot is created only after the final
- *     sheet listed for that exporter has written successfully.
+ *   - Exporter-completion tracking lives in 21_ExportFramework.js. This
+ *     module creates a snapshot only after that framework confirms every
+ *     manifest-owned sheet succeeded in the current execution.
  *   - Snapshot failure is intentionally fatal to the exporter execution. The
  *     CURRENT workbook may already contain the refreshed data, but the run is
  *     not considered fully successful unless its historical snapshot exists.
@@ -38,38 +38,13 @@
  *   - QBO_EXPORT_SNAPSHOT_FOLDER_ID
  *
  * Change History:
+ *   - 2026-09-01: Removed final-sheet inference from snapshot orchestration.
+ *     Exporter completion is now established centrally by the export framework
+ *     before createQboExportSnapshot_() is called.
  *   - 2026-09-01: Added successful-export workbook snapshots for the
  *     independent-workbook architecture.
  * ============================================================================
  */
-
-/**
- * Creates a snapshot only when the just-written sheet is the final sheet owned
- * by its exporter. Earlier tables in multi-sheet exporters do not snapshot.
- *
- * @param {string} sheetName Successfully written export sheet name.
- * @return {Object|null} Snapshot metadata, or null when this is not the final
- *   sheet for the exporter.
- */
-function snapshotQboExportWorkbookAfterFinalSheet_(sheetName) {
-  const entry = getQboExportManifestEntryForSheet_(sheetName);
-
-  if (!entry) {
-    throw new Error(
-      'Cannot evaluate QBO export snapshot for unregistered sheet ' +
-      String(sheetName || '') + '.'
-    );
-  }
-
-  const finalSheetName = entry.sheetNames[entry.sheetNames.length - 1];
-
-  if (sheetName !== finalSheetName) {
-    return null;
-  }
-
-  return createQboExportSnapshot_(entry.key);
-}
-
 
 /**
  * Copies one configured CURRENT export workbook into the snapshot folder.

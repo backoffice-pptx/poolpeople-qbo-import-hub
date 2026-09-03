@@ -11,6 +11,7 @@
  *   - logExportEvent_()
  *   - withExportWriteLock_()
  *   - writeExportUnlocked_()
+ *   - registerQboExporterSheetCompletion_()
  *   - validateExportConfig_()
  *   - validateExportTableStructure_()
  *   - formatExportHeader_()
@@ -30,6 +31,11 @@
  *   - Generic helpers may be evaluated for Application 40 only after demonstrated reuse; QBO-specific behavior remains in Application 50.
  *
  * Change History:
+ *   - 2026-09-01: Standardized exporter-level completion across single- and
+ *     multi-sheet exports. A workbook snapshot is now created only after every
+ *     manifest-owned sheet has successfully written in the current execution;
+ *     completion is tracked centrally rather than inferred from whichever
+ *     sheet happens to be listed last in the manifest.
  *   - 2026-09-01: Added post-write snapshot creation after the final owned
  *     sheet of each exporter succeeds. Snapshot creation runs while the export
  *     write lock is still held so the copied workbook represents the completed
@@ -62,6 +68,15 @@
  * 21_ExportFramework.gs
  * Shared QBO export-writing framework
  ***********************/
+
+/**
+ * Per-execution exporter completion state.
+ *
+ * This state intentionally lives only in memory. It is not stored in Script
+ * Properties because a sheet written by a prior or failed Apps Script
+ * execution must never satisfy completion for a later run.
+ */
+const QBO_EXPORTER_COMPLETION_STATE_ = Object.create(null);
 
 /**
  * Writes a complete export to a Google Sheet.
@@ -103,7 +118,7 @@ function writeExport_(config) {
       function() {
         const writtenSheet = writeExportUnlocked_(config);
 
-        snapshotQboExportWorkbookAfterFinalSheet_(config.sheetName);
+        registerQboExporterSheetCompletion_(config.sheetName);
 
         return writtenSheet;
       }
@@ -142,6 +157,88 @@ function writeExport_(config) {
 
     throw error;
   }
+}
+
+
+/**
+ * Records one successfully written manifest-owned sheet and completes the
+ * exporter only after every sheet owned by that manifest entry has succeeded
+ * in this same Apps Script execution.
+ *
+ * The snapshot is created while writeExport_() still holds the shared write
+ * lock. This preserves the existing no-concurrent-write guarantee while
+ * removing the fragile assumption that writing the manifest's last-listed
+ * sheet alone proves the exporter completed successfully.
+ *
+ * Unregistered sheets are ignored here. Production export sheets cannot reach
+ * this point unregistered because destination resolution is manifest-driven,
+ * but this keeps generic framework tests such as TEST_ExportFramework usable.
+ *
+ * @param {string} sheetName Successfully written sheet name.
+ * @return {Object|null} Completion metadata, or null when exporter is pending
+ *   or the sheet is not registered.
+ */
+function registerQboExporterSheetCompletion_(sheetName) {
+  const entry = getQboExportManifestEntryForSheet_(sheetName);
+
+  if (!entry) {
+    return null;
+  }
+
+  let state = QBO_EXPORTER_COMPLETION_STATE_[entry.key];
+
+  if (!state) {
+    state = {
+      completedSheets: Object.create(null),
+      firstCompletedAt: Date.now()
+    };
+    QBO_EXPORTER_COMPLETION_STATE_[entry.key] = state;
+  }
+
+  state.completedSheets[sheetName] = true;
+
+  const completedSheetNames = entry.sheetNames.filter(function(ownedSheetName) {
+    return Boolean(state.completedSheets[ownedSheetName]);
+  });
+
+  safeLog_(
+    '[EXPORTER] | SHEET COMPLETE | export=' + entry.key +
+    ' | sheet=' + sheetName +
+    ' | completed=' + completedSheetNames.length + '/' + entry.sheetNames.length
+  );
+
+  const missingSheetNames = entry.sheetNames.filter(function(ownedSheetName) {
+    return !state.completedSheets[ownedSheetName];
+  });
+
+  if (missingSheetNames.length > 0) {
+    return {
+      exportKey: entry.key,
+      complete: false,
+      completedSheets: completedSheetNames.slice(),
+      missingSheets: missingSheetNames.slice()
+    };
+  }
+
+  const snapshot = createQboExportSnapshot_(entry.key);
+  const durationMs = Date.now() - state.firstCompletedAt;
+
+  safeLog_(
+    '[EXPORTER] | COMPLETE | export=' + entry.key +
+    ' | sheets=' + entry.sheetNames.length +
+    ' | durationMs=' + durationMs
+  );
+
+  delete QBO_EXPORTER_COMPLETION_STATE_[entry.key];
+
+  return {
+    exportKey: entry.key,
+    complete: true,
+    completedSheets: completedSheetNames.slice(),
+    missingSheets: [],
+    snapshot: snapshot,
+    durationMs: durationMs
+  };
 }
 
 
