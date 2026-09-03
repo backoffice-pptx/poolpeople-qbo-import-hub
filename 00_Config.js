@@ -21,6 +21,8 @@
  *   - Remains in Application 50 unless a later approved architecture decision assigns a narrower reusable component elsewhere.
  *
  * Change History:
+ *   - 2026-09-02: Added dedicated scheduled-run history/status workbook
+ *     configuration for persistent daily export observability.
  *   - 2026-09-01: Added daily export scheduler policy for a chained, one-export-
  *     per-execution schedule that stays below Apps Script trigger limits.
  *   - 2026-09-01: Added required snapshot-folder configuration and shared
@@ -62,6 +64,8 @@
  *   QBO_CLIENT_SECRET
  *   QBO_EXPORT_<MANIFEST_KEY>_SPREADSHEET_ID
  *     One configured Google Sheets file ID per export manifest entry.
+ *   QBO_EXPORT_RUN_HISTORY_SPREADSHEET_ID
+ *     Dedicated workbook for scheduled-run history and latest export status.
  *
  * Optional Script Properties:
  *   QBO_MINORVERSION           Defaults to 75
@@ -71,7 +75,8 @@ const SCRIPT_PROPERTY_KEYS = Object.freeze({
   CLIENT_ID: 'QBO_CLIENT_ID',
   CLIENT_SECRET: 'QBO_CLIENT_SECRET',
   MINOR_VERSION: 'QBO_MINORVERSION',
-  SNAPSHOT_FOLDER_ID: 'QBO_EXPORT_SNAPSHOT_FOLDER_ID'
+  SNAPSHOT_FOLDER_ID: 'QBO_EXPORT_SNAPSHOT_FOLDER_ID',
+  RUN_HISTORY_SPREADSHEET_ID: 'QBO_EXPORT_RUN_HISTORY_SPREADSHEET_ID'
 });
 
 const EXPORT_DESTINATION = Object.freeze({
@@ -169,6 +174,21 @@ const DAILY_EXPORT_SCHEDULE = Object.freeze({
  */
 const EXPORT_SNAPSHOT = Object.freeze({
   TIMESTAMP_FORMAT: 'yyyyMMdd_HHmmss'
+});
+
+
+/**
+ * Persistent scheduled-run history/status policy.
+ *
+ * The run-history workbook is operational metadata only; QBO entity data
+ * remains isolated in the 22 independent export workbooks.
+ */
+const QBO_RUN_HISTORY = Object.freeze({
+  WORKBOOK_TITLE: 'QBO_Export_Run_History',
+  RUNS_SHEET: 'QBO_RunHistory',
+  EXPORTS_SHEET: 'QBO_ExportRunHistory',
+  STATUS_SHEET: 'QBO_ExportStatus',
+  HEADER_ROW: 1
 });
 
 /**

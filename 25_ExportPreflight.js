@@ -34,6 +34,8 @@
  *     the independent-workbook architecture.
  *
  * Change History:
+ *   - 2026-09-02: Added run-history workbook configuration/structure to the
+ *     production preflight gate.
  *   - 2026-09-01: Added independent-workbook production preflight validation.
  * ============================================================================
  */
@@ -54,6 +56,7 @@ function validateQboExportPreflight_() {
   let destinationResult = null;
   let snapshotResult = null;
   let authResult = null;
+  let runHistoryResult = null;
 
   try {
     manifestResult = validateQboManifestPreflight_();
@@ -98,6 +101,25 @@ function validateQboExportPreflight_() {
     );
   }
 
+  try {
+    const runHistorySpreadsheet = getQboRunHistorySpreadsheet_();
+    validateQboRunHistoryWorkbookStructure_(runHistorySpreadsheet);
+    runHistoryResult = {
+      spreadsheetId: runHistorySpreadsheet.getId(),
+      workbookName: runHistorySpreadsheet.getName()
+    };
+
+    console.log(
+      '[PREFLIGHT] | RUN HISTORY OK | workbook=' +
+      runHistoryResult.workbookName
+    );
+  } catch (error) {
+    errors.push(
+      'Run history: ' +
+      (error && error.message ? error.message : String(error))
+    );
+  }
+
   if (errors.length > 0) {
     console.error(
       '[PREFLIGHT] | ERROR | count=' + errors.length +
@@ -117,6 +139,7 @@ function validateQboExportPreflight_() {
     sheetCount: destinationResult.sheetCount,
     snapshotFolderId: snapshotResult.folderId,
     realmId: authResult.realmId,
+    runHistorySpreadsheetId: runHistoryResult.spreadsheetId,
     timezone: Session.getScriptTimeZone(),
     durationMs: Date.now() - startedAt
   };
