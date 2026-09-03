@@ -32,6 +32,9 @@
  *     before the next queue handoff.
  *
  * Change History:
+ *   - 2026-09-03: Added failure-path safeguards so interruption cleanup
+ *     cannot overwrite a newer exporter status, and extracted the durable
+ *     resume-state reducer for deterministic regression testing.
  *   - 2026-09-02: Added persistent scheduled-run history and latest status.
  *   - 2026-09-02: Close stranded RUNNING exporter rows when a scheduled run
  *                 is explicitly cancelled or replaced.
@@ -471,6 +474,78 @@ function recordQboScheduledRunComplete_(runId, completedAt, completedExports, fa
   ]]);
 }
 
+/**
+ * Returns true only when the current latest-status row still represents the
+ * exact RUNNING attempt being closed.
+ *
+ * This prevents retroactive cleanup of an old stranded attempt from
+ * overwriting a newer COMPLETE/ERROR/INTERRUPTED status.
+ */
+function shouldUpdateQboInterruptedLatestStatus_(statusRow, runId, startedAt) {
+  if (!statusRow || statusRow.length < QBO_RUN_HISTORY_HEADERS_.STATUS.length) {
+    return false;
+  }
+
+  if (
+    String(statusRow[2] || '') !== String(runId) ||
+    String(statusRow[5] || '') !== 'RUNNING'
+  ) {
+    return false;
+  }
+
+  const expectedStartedMs = getQboHistoryDateMs_(startedAt);
+  const actualStartedMs = getQboHistoryDateMs_(statusRow[3]);
+
+  if (!Number.isFinite(expectedStartedMs) || !Number.isFinite(actualStartedMs)) {
+    return String(statusRow[3] || '') === String(startedAt || '');
+  }
+
+  return actualStartedMs === expectedStartedMs;
+}
+
+
+/**
+ * Normalizes a history timestamp to milliseconds for exact-attempt matching.
+ */
+function getQboHistoryDateMs_(value) {
+  if (
+    value &&
+    Object.prototype.toString.call(value) === '[object Date]' &&
+    Number.isFinite(value.getTime())
+  ) {
+    return value.getTime();
+  }
+
+  const parsed = Date.parse(String(value || ''));
+  return Number.isFinite(parsed) ? parsed : NaN;
+}
+
+
+/**
+ * Reads the current status row for one manifest exporter.
+ */
+function getQboExportStatusRow_(statusSheet, exportKey) {
+  if (statusSheet.getLastRow() <= 1) {
+    return null;
+  }
+
+  const values = statusSheet.getRange(
+    2,
+    1,
+    statusSheet.getLastRow() - 1,
+    QBO_RUN_HISTORY_HEADERS_.STATUS.length
+  ).getValues();
+
+  for (let index = 0; index < values.length; index += 1) {
+    if (String(values[index][0] || '') === String(exportKey)) {
+      return values[index];
+    }
+  }
+
+  return null;
+}
+
+
 function recordQboScheduledRunningExportsInterrupted_(runId, completedAt, parentStatus, reasonOverride) {
   const spreadsheet = getQboRunHistorySpreadsheet_();
   const exportsSheet = spreadsheet.getSheetByName(QBO_RUN_HISTORY.EXPORTS_SHEET);
@@ -520,14 +595,30 @@ function recordQboScheduledRunningExportsInterrupted_(runId, completedAt, parent
     ]]);
 
     if (entry) {
-      updateQboExportStatusRow_(statusSheet, entry, [
-        runId,
-        startedAt,
-        interruptedAt,
-        'INTERRUPTED',
-        durationMs,
-        reason
-      ]);
+      const currentStatusRow = getQboExportStatusRow_(statusSheet, exportKey);
+
+      if (
+        shouldUpdateQboInterruptedLatestStatus_(
+          currentStatusRow,
+          runId,
+          startedAt
+        )
+      ) {
+        updateQboExportStatusRow_(statusSheet, entry, [
+          runId,
+          startedAt,
+          interruptedAt,
+          'INTERRUPTED',
+          durationMs,
+          reason
+        ]);
+      } else {
+        console.log(
+          '[RUN HISTORY] | STATUS PRESERVED | runId=' + runId +
+          ' | export=' + exportKey +
+          ' | reason=newer status already exists'
+        );
+      }
     }
 
     interruptedCount += 1;
@@ -647,58 +738,62 @@ function getQboScheduledRunResumeState_(runId) {
     throw new Error('Run ' + runId + ' is missing StartedAt and cannot be resumed.');
   }
 
-  const latestStatusByKey = Object.create(null);
-
+  let exportRows = [];
   if (exportsSheet.getLastRow() > 1) {
-    const values = exportsSheet.getRange(
+    exportRows = exportsSheet.getRange(
       2,
       1,
       exportsSheet.getLastRow() - 1,
       QBO_RUN_HISTORY_HEADERS_.EXPORTS.length
     ).getValues();
+  }
 
-    values.forEach(function(row) {
-      if (String(row[0]) !== String(runId)) {
-        return;
-      }
-      const key = String(row[2] || '').trim();
-      if (key) {
-        // Rows are chronological; later retry attempts replace earlier
-        // statuses when determining the current resume point.
-        latestStatusByKey[key] = String(row[6] || '').trim();
-      }
-    });
+  return buildQboScheduledRunResumeState_(
+    String(runId),
+    startedAt,
+    exportRows,
+    DAILY_QBO_EXPORT_ORDER
+  );
+}
+
+
+/**
+ * Pure reducer used by resume/recovery and failure-path regression tests.
+ *
+ * Later retry rows for the same exporter supersede earlier attempts. The first
+ * exporter whose latest attempt is not COMPLETE is the resume point.
+ */
+function buildQboScheduledRunResumeState_(runId, startedAt, exportRows, exportOrder) {
+  const latestStatusByKey = Object.create(null);
+
+  (exportRows || []).forEach(function(row) {
+    if (String(row[0]) !== String(runId)) {
+      return;
+    }
+
+    const key = String(row[2] || '').trim();
+    if (key) {
+      latestStatusByKey[key] = String(row[6] || '').trim();
+    }
+  });
+
+  let resumeIndex = exportOrder.length;
+
+  for (let index = 0; index < exportOrder.length; index += 1) {
+    const status = latestStatusByKey[exportOrder[index]] || '';
+
+    if (status !== 'COMPLETE') {
+      resumeIndex = index;
+      break;
+    }
   }
 
   let completedCount = 0;
   let failedCount = 0;
-  let resumeIndex = DAILY_QBO_EXPORT_ORDER.length;
 
-  for (let index = 0; index < DAILY_QBO_EXPORT_ORDER.length; index += 1) {
-    const key = DAILY_QBO_EXPORT_ORDER[index];
-    const status = latestStatusByKey[key] || '';
-
-    if (status === 'COMPLETE') {
-      completedCount += 1;
-      continue;
-    }
-
-    if (status === 'ERROR') {
-      failedCount += 1;
-    }
-
-    resumeIndex = index;
-    break;
-  }
-
-  // Count any completed/error exporters before the resume point based on
-  // latest attempt status. Later positions are intentionally ignored because
-  // a stranded chained run cannot have legitimately progressed past a missing
-  // handoff without queue state being advanced.
-  completedCount = 0;
-  failedCount = 0;
   for (let index = 0; index < resumeIndex; index += 1) {
-    const status = latestStatusByKey[DAILY_QBO_EXPORT_ORDER[index]] || '';
+    const status = latestStatusByKey[exportOrder[index]] || '';
+
     if (status === 'COMPLETE') {
       completedCount += 1;
     } else if (status === 'ERROR') {
@@ -708,13 +803,12 @@ function getQboScheduledRunResumeState_(runId) {
 
   return {
     runId: String(runId),
-    startedAt: startedAt,
+    startedAt: String(startedAt),
     resumeIndex: resumeIndex,
     completedCount: completedCount,
     failedCount: failedCount
   };
 }
-
 function updateQboExportStatusRow_(sheet, entry, values) {
   const rowNumber = findQboStatusRow_(sheet, entry.key);
 
