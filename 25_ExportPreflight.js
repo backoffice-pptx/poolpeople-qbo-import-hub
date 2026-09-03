@@ -16,6 +16,7 @@
  *
  * Dependencies:
  *   - Configuration in 00_Config.js
+ *   - Startup diagnostics in 27_StartupDiagnostics.js
  *   - OAuth helpers in 01_Auth.js
  *   - Export manifest helpers in 22_ExportManifest.js
  *   - Snapshot configuration in 23_ExportSnapshots.js
@@ -35,6 +36,8 @@
  *     the independent-workbook architecture.
  *
  * Change History:
+ *   - 2026-09-03: Added the fast startup/configuration diagnostic as the
+ *     first preflight gate before external resource access.
  *   - 2026-09-03: Routed manifest/scheduler checks through the centralized
  *     manifest validator and added a focused read-only validation entry point.
  *   - 2026-09-02: Added run-history workbook configuration/structure to the
@@ -55,6 +58,7 @@ function validateQboExportPreflight_() {
 
   console.log('[PREFLIGHT] | START');
 
+  let startupResult = null;
   let manifestResult = null;
   let destinationResult = null;
   let snapshotResult = null;
@@ -62,11 +66,22 @@ function validateQboExportPreflight_() {
   let runHistoryResult = null;
 
   try {
-    manifestResult = validateQboManifestPreflight_();
+    startupResult = validateQboStartupConfiguration_();
   } catch (error) {
     errors.push(
-      'Manifest: ' + (error && error.message ? error.message : String(error))
+      'Startup configuration: ' +
+      (error && error.message ? error.message : String(error))
     );
+  }
+
+  if (startupResult) {
+    try {
+      manifestResult = validateQboManifestPreflight_();
+    } catch (error) {
+      errors.push(
+        'Manifest: ' + (error && error.message ? error.message : String(error))
+      );
+    }
   }
 
   if (manifestResult) {
