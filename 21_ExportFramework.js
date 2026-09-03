@@ -3,9 +3,6 @@
  * Module      : 21_ExportFramework.js
  * Purpose     : Reusable export orchestration and table-writing framework for QBO entity exporters.
  *
- * Public API:
- *   - testWriteExport()
- *
  * Internal Helpers:
  *   - writeExport_()
  *   - logExportEvent_()
@@ -31,6 +28,8 @@
  *   - Generic helpers may be evaluated for Application 40 only after demonstrated reuse; QBO-specific behavior remains in Application 50.
  *
  * Change History:
+ *   - 2026-09-03: Final cleanup removed the obsolete temporary
+ *     testWriteExport() harness from the production export framework.
  *   - 2026-09-01: Standardized exporter-level completion across single- and
  *     multi-sheet exports. A workbook snapshot is now created only after every
  *     manifest-owned sheet has successfully written in the current execution;
@@ -700,55 +699,4 @@ function applyExportNumberFormats_(
           .setNumberFormat(format);
       }
     });
-}
-
-
-/**
- * Temporary test for the shared export framework.
- *
- * Creates TEST_ExportFramework and verifies:
- * - Header formatting
- * - Filters
- * - Column widths
- * - Compact clipped/no-wrap data rows
- * - Currency formatting
- * - Date formatting
- */
-function testWriteExport() {
-  writeExport_({
-    sheetName: 'TEST_ExportFramework',
-    headers: [
-      'Id',
-      'Name',
-      'Amount',
-      'Date',
-      'Notes'
-    ],
-    rows: [
-      [
-        1,
-        'Alpha',
-        125.5,
-        new Date(2026, 6, 17),
-        'Framework test row'
-      ],
-      [
-        2,
-        'Beta',
-        250,
-        new Date(2026, 6, 18),
-        'Second framework test row'
-      ]
-    ],
-    columnWidths: {
-      2: 200,
-      5: 300
-    },
-    numberFormats: {
-      3: '$#,##0.00',
-      4: 'yyyy-mm-dd'
-    },
-    logMessage:
-      'Export framework test completed.'
-  });
 }
