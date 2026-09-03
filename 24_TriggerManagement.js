@@ -26,6 +26,8 @@
  *     records that execution as failed.
  *
  * Change History:
+ *   - 2026-09-03: Replaced the scheduled-export switch with one executable
+ *     registry and added one-to-one manifest/schedule/registry validation.
  *   - 2026-09-02: Added persistent scheduled-run history/status recording for
  *     run start/completion and each isolated exporter execution.
  *   - 2026-09-02: Added same-run resume from the first exporter that did not
@@ -72,6 +74,39 @@ const DAILY_QBO_QUEUE_PROPERTIES = Object.freeze({
   RUN_ID: 'QBO_DAILY_EXPORT_RUN_ID',
   STARTED_AT: 'QBO_DAILY_EXPORT_STARTED_AT',
   FAILED_COUNT: 'QBO_DAILY_EXPORT_FAILED_COUNT'
+});
+
+
+/**
+ * Concrete callable registry for scheduled exporters.
+ *
+ * The manifest remains the descriptive authority. Validation requires every
+ * manifest exportFunctionName to have exactly one callable here, with no
+ * extra scheduled exporters outside the manifest.
+ */
+const QBO_SCHEDULED_EXPORTERS = Object.freeze({
+  exportQboCustomers: exportQboCustomers,
+  exportQboPreferences: exportQboPreferences,
+  exportQboItems: exportQboItems,
+  exportQboClasses: exportQboClasses,
+  exportQboTerms: exportQboTerms,
+  exportQboPaymentMethods: exportQboPaymentMethods,
+  exportQboTaxCodes: exportQboTaxCodes,
+  exportQboDepartments: exportQboDepartments,
+  exportQboVendors: exportQboVendors,
+  exportQboAccounts: exportQboAccounts,
+  exportQboInvoices: exportQboInvoices,
+  exportQboPayments: exportQboPayments,
+  exportQboCreditMemos: exportQboCreditMemos,
+  exportQboEstimates: exportQboEstimates,
+  exportQboBills: exportQboBills,
+  exportQboBillPayments: exportQboBillPayments,
+  exportQboPurchases: exportQboPurchases,
+  exportQboDeposits: exportQboDeposits,
+  exportQboJournalEntries: exportQboJournalEntries,
+  exportQboSalesReceipts: exportQboSalesReceipts,
+  exportQboRecurringTransactions: exportQboRecurringTransactions,
+  exportQboRefundReceipts: exportQboRefundReceipts
 });
 
 /**
@@ -433,9 +468,32 @@ function runNextScheduledQboExport() {
  * Verifies that the daily queue contains every manifest exporter exactly once.
  */
 function validateDailyQboExportSchedule_() {
-  const manifest = getQboExportManifest();
+  const manifestResult = validateQboExportManifest_();
+  const manifest = manifestResult.manifest;
   const manifestKeys = manifest.map(function(entry) { return entry.key; });
-  const seen = {};
+  const manifestFunctions = Object.create(null);
+  const seen = Object.create(null);
+
+  manifest.forEach(function(entry) {
+    manifestFunctions[entry.exportFunctionName] = entry.key;
+
+    if (typeof QBO_SCHEDULED_EXPORTERS[entry.exportFunctionName] !== 'function') {
+      throw new Error(
+        'Manifest exporter ' + entry.key +
+        ' references unsupported scheduled function: ' +
+        entry.exportFunctionName + '.'
+      );
+    }
+  });
+
+  Object.keys(QBO_SCHEDULED_EXPORTERS).forEach(function(functionName) {
+    if (!manifestFunctions[functionName]) {
+      throw new Error(
+        'Scheduled exporter registry contains function not present in manifest: ' +
+        functionName + '.'
+      );
+    }
+  });
 
   DAILY_QBO_EXPORT_ORDER.forEach(function(key) {
     if (seen[key]) {
@@ -454,7 +512,8 @@ function validateDailyQboExportSchedule_() {
 
   if (missing.length > 0) {
     throw new Error(
-      'Daily schedule is missing manifest exporter(s): ' + missing.join(', ') + '.'
+      'Daily schedule is missing manifest exporter(s): ' +
+      missing.join(', ') + '.'
     );
   }
 
@@ -464,6 +523,20 @@ function validateDailyQboExportSchedule_() {
       DAILY_QBO_EXPORT_ORDER.length + ', manifest=' + manifest.length + '.'
     );
   }
+
+  const scheduledFunctionCount = Object.keys(QBO_SCHEDULED_EXPORTERS).length;
+  if (scheduledFunctionCount !== manifest.length) {
+    throw new Error(
+      'Scheduled exporter registry/manifest count mismatch: registry=' +
+      scheduledFunctionCount + ', manifest=' + manifest.length + '.'
+    );
+  }
+
+  return {
+    exportCount: manifestResult.exportCount,
+    sheetCount: manifestResult.sheetCount,
+    scheduledFunctionCount: scheduledFunctionCount
+  };
 }
 
 function scheduleNextQboExportTrigger_() {
@@ -530,32 +603,15 @@ function isManagedDailyQboTriggerHandler_(handler) {
 }
 
 function invokeScheduledQboExporter_(functionName) {
-  switch (functionName) {
-    case 'exportQboCustomers': return exportQboCustomers();
-    case 'exportQboPreferences': return exportQboPreferences();
-    case 'exportQboItems': return exportQboItems();
-    case 'exportQboClasses': return exportQboClasses();
-    case 'exportQboTerms': return exportQboTerms();
-    case 'exportQboPaymentMethods': return exportQboPaymentMethods();
-    case 'exportQboTaxCodes': return exportQboTaxCodes();
-    case 'exportQboDepartments': return exportQboDepartments();
-    case 'exportQboVendors': return exportQboVendors();
-    case 'exportQboAccounts': return exportQboAccounts();
-    case 'exportQboInvoices': return exportQboInvoices();
-    case 'exportQboPayments': return exportQboPayments();
-    case 'exportQboCreditMemos': return exportQboCreditMemos();
-    case 'exportQboEstimates': return exportQboEstimates();
-    case 'exportQboBills': return exportQboBills();
-    case 'exportQboBillPayments': return exportQboBillPayments();
-    case 'exportQboPurchases': return exportQboPurchases();
-    case 'exportQboDeposits': return exportQboDeposits();
-    case 'exportQboJournalEntries': return exportQboJournalEntries();
-    case 'exportQboSalesReceipts': return exportQboSalesReceipts();
-    case 'exportQboRecurringTransactions': return exportQboRecurringTransactions();
-    case 'exportQboRefundReceipts': return exportQboRefundReceipts();
-    default:
-      throw new Error('Unsupported scheduled exporter function: ' + functionName + '.');
+  const exporter = QBO_SCHEDULED_EXPORTERS[functionName];
+
+  if (typeof exporter !== 'function') {
+    throw new Error(
+      'Unsupported scheduled exporter function: ' + functionName + '.'
+    );
   }
+
+  return exporter();
 }
 
 

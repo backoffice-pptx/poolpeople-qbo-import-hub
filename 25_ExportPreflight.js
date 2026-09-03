@@ -6,6 +6,7 @@
  *
  * Public API:
  *   - testQboExportPreflight()
+ *   - testQboManifestDrivenValidation()
  *
  * Internal Helpers:
  *   - validateQboExportPreflight_()
@@ -34,6 +35,8 @@
  *     the independent-workbook architecture.
  *
  * Change History:
+ *   - 2026-09-03: Routed manifest/scheduler checks through the centralized
+ *     manifest validator and added a focused read-only validation entry point.
  *   - 2026-09-02: Added run-history workbook configuration/structure to the
  *     production preflight gate.
  *   - 2026-09-01: Added independent-workbook production preflight validation.
@@ -163,71 +166,44 @@ function validateQboExportPreflight_() {
  * @return {Object} Validated manifest summary.
  */
 function validateQboManifestPreflight_() {
-  const manifest = getQboExportManifest();
+  const result = validateQboExportManifest_();
 
-  if (!Array.isArray(manifest) || manifest.length === 0) {
-    throw new Error('QBO export manifest is empty.');
-  }
-
-  const keys = Object.create(null);
-  const workbookKeys = Object.create(null);
-  const sheetOwners = Object.create(null);
-
-  manifest.forEach(function(entry) {
-    if (!entry || !entry.key) {
-      throw new Error('Manifest contains an entry without a key.');
-    }
-
-    if (keys[entry.key]) {
-      throw new Error('Duplicate manifest key: ' + entry.key + '.');
-    }
-    keys[entry.key] = true;
-
-    if (!entry.workbookKey) {
-      throw new Error('Manifest entry ' + entry.key + ' has no workbookKey.');
-    }
-
-    if (workbookKeys[entry.workbookKey]) {
-      throw new Error(
-        'Independent workbookKey ' + entry.workbookKey +
-        ' is assigned to more than one manifest entry.'
-      );
-    }
-    workbookKeys[entry.workbookKey] = true;
-
-    if (!Array.isArray(entry.sheetNames) || entry.sheetNames.length === 0) {
-      throw new Error('Manifest entry ' + entry.key + ' owns no sheets.');
-    }
-
-    entry.sheetNames.forEach(function(sheetName) {
-      if (!sheetName) {
-        throw new Error('Manifest entry ' + entry.key + ' contains a blank sheet name.');
-      }
-
-      if (sheetOwners[sheetName]) {
-        throw new Error(
-          'Sheet ' + sheetName + ' is owned by both ' +
-          sheetOwners[sheetName] + ' and ' + entry.key + '.'
-        );
-      }
-
-      sheetOwners[sheetName] = entry.key;
-    });
-  });
-
-  // Reuse the production scheduler's manifest/order validation so a schedule
-  // drift is detected during the same preflight without duplicating its rules.
-  validateDailyQboExportSchedule_();
+  // Scheduling is a production consumer of the manifest. Validate that every
+  // manifest exporter is scheduled exactly once and has one executable entry.
+  const scheduleResult = validateDailyQboExportSchedule_();
 
   console.log(
-    '[PREFLIGHT] | MANIFEST OK | exports=' + manifest.length +
-    ' | sheets=' + Object.keys(sheetOwners).length
+    '[PREFLIGHT] | MANIFEST OK | exports=' + result.exportCount +
+    ' | sheets=' + result.sheetCount +
+    ' | scheduledFunctions=' + scheduleResult.scheduledFunctionCount
+  );
+
+  return result;
+}
+
+
+/**
+ * Public read-only validation focused on manifest-driven controls.
+ *
+ * This does not open destination workbooks, call QBO, or mutate configuration.
+ */
+function testQboManifestDrivenValidation() {
+  const manifestResult = validateQboExportManifest_();
+  const scheduleResult = validateDailyQboExportSchedule_();
+
+  console.log(
+    '[MANIFEST VALIDATION] | COMPLETE | exports=' +
+    manifestResult.exportCount +
+    ' | sheets=' + manifestResult.sheetCount +
+    ' | exporterFunctions=' + manifestResult.exporterFunctionCount +
+    ' | scheduledFunctions=' + scheduleResult.scheduledFunctionCount
   );
 
   return {
-    manifest: manifest,
-    exportCount: manifest.length,
-    sheetCount: Object.keys(sheetOwners).length
+    exportCount: manifestResult.exportCount,
+    sheetCount: manifestResult.sheetCount,
+    exporterFunctionCount: manifestResult.exporterFunctionCount,
+    scheduledFunctionCount: scheduleResult.scheduledFunctionCount
   };
 }
 

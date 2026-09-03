@@ -11,6 +11,7 @@
  *   - testQboExportDestinationRouting()
  *
  * Internal Helpers:
+ *   - validateQboExportManifest_()
  *   - getQboExportManifestEntry_()
  *   - getQboExportManifestEntryForSheet_()
  *   - getQboExportWorkbookPropertyKey_()
@@ -34,6 +35,9 @@
  *     writes; this registry does not change locking or write behavior.
  *
  * Change History:
+ *   - 2026-09-03: Added centralized manifest structural validation for keys,
+ *     exporter functions, workbook ownership, property resolution, and sheet
+ *     ownership.
  *   - 2026-09-01: Enforced independent-only destination diagnostics after
  *     successful provisioning of all export workbooks; legacy fallback status
  *     is no longer part of readiness evaluation.
@@ -248,6 +252,125 @@ function getQboExportManifest() {
       sheetNames: entry.sheetNames.slice()
     };
   });
+}
+
+
+/**
+ * Centrally validates structural invariants of the export manifest.
+ *
+ * @return {Object} Validated manifest summary.
+ */
+function validateQboExportManifest_() {
+  const manifest = getQboExportManifest();
+
+  if (!Array.isArray(manifest) || manifest.length === 0) {
+    throw new Error('QBO export manifest is empty.');
+  }
+
+  const keys = Object.create(null);
+  const workbookKeys = Object.create(null);
+  const functionOwners = Object.create(null);
+  const sheetOwners = Object.create(null);
+
+  manifest.forEach(function(entry, index) {
+    if (!entry || typeof entry !== 'object') {
+      throw new Error('Manifest entry ' + (index + 1) + ' is invalid.');
+    }
+
+    const key = String(entry.key || '').trim();
+    if (!key || !/^[A-Z0-9_]+$/.test(key)) {
+      throw new Error(
+        'Manifest entry ' + (index + 1) + ' has invalid key: ' + key + '.'
+      );
+    }
+    if (keys[key]) {
+      throw new Error('Duplicate manifest key: ' + key + '.');
+    }
+    keys[key] = true;
+
+    if (!String(entry.category || '').trim()) {
+      throw new Error('Manifest entry ' + key + ' has no category.');
+    }
+    if (!String(entry.entityName || '').trim()) {
+      throw new Error('Manifest entry ' + key + ' has no entityName.');
+    }
+
+    const functionName = String(entry.exportFunctionName || '').trim();
+    if (!functionName || !/^exportQbo[A-Za-z0-9_]+$/.test(functionName)) {
+      throw new Error(
+        'Manifest entry ' + key + ' has invalid exportFunctionName: ' +
+        functionName + '.'
+      );
+    }
+    if (functionOwners[functionName]) {
+      throw new Error(
+        'Exporter function ' + functionName + ' is assigned to both ' +
+        functionOwners[functionName] + ' and ' + key + '.'
+      );
+    }
+    functionOwners[functionName] = key;
+
+    const workbookKey = String(entry.workbookKey || '').trim();
+    if (!workbookKey || !/^[A-Z0-9_]+$/.test(workbookKey)) {
+      throw new Error(
+        'Manifest entry ' + key + ' has invalid workbookKey: ' +
+        workbookKey + '.'
+      );
+    }
+    if (workbookKeys[workbookKey]) {
+      throw new Error(
+        'Independent workbookKey ' + workbookKey +
+        ' is assigned to more than one manifest entry.'
+      );
+    }
+    workbookKeys[workbookKey] = true;
+
+    const expectedPropertyKey = getQboExportWorkbookPropertyKey_(workbookKey);
+    if (entry.workbookPropertyKey !== expectedPropertyKey) {
+      throw new Error(
+        'Manifest entry ' + key +
+        ' resolved unexpected workbook property key: ' +
+        entry.workbookPropertyKey + '. Expected ' + expectedPropertyKey + '.'
+      );
+    }
+
+    if (!Array.isArray(entry.sheetNames) || entry.sheetNames.length === 0) {
+      throw new Error('Manifest entry ' + key + ' owns no sheets.');
+    }
+
+    const entrySheets = Object.create(null);
+    entry.sheetNames.forEach(function(rawSheetName) {
+      const sheetName = String(rawSheetName || '').trim();
+
+      if (!sheetName) {
+        throw new Error(
+          'Manifest entry ' + key + ' contains a blank sheet name.'
+        );
+      }
+      if (entrySheets[sheetName]) {
+        throw new Error(
+          'Manifest entry ' + key + ' lists sheet ' +
+          sheetName + ' more than once.'
+        );
+      }
+      entrySheets[sheetName] = true;
+
+      if (sheetOwners[sheetName]) {
+        throw new Error(
+          'Sheet ' + sheetName + ' is owned by both ' +
+          sheetOwners[sheetName] + ' and ' + key + '.'
+        );
+      }
+      sheetOwners[sheetName] = key;
+    });
+  });
+
+  return {
+    manifest: manifest,
+    exportCount: manifest.length,
+    sheetCount: Object.keys(sheetOwners).length,
+    exporterFunctionCount: Object.keys(functionOwners).length
+  };
 }
 
 /**
