@@ -31,6 +31,10 @@
  *   - Remains in Application 50 unless a later approved architecture decision assigns a narrower reusable component elsewhere.
  *
  * Change History:
+ *   - 2026-09-01: Corrected transient retry delay handling so Retry-After
+ *     cannot reduce the configured exponential backoff, and corrected
+ *     non-2xx response handling so plain-text HTTP failures are reported as
+ *     HTTP errors rather than misleading invalid-JSON errors.
  *   - 2026-09-01: Added bounded QBO pagination safeguards: centralized page
  *     sizing, maximum-page protection, response-shape checks, and detection
  *     of repeated full pages.
@@ -205,7 +209,8 @@ function qboGetRetryAfterMs_(response) {
 
 
 /**
- * Calculates bounded exponential backoff, honoring Retry-After when present.
+ * Calculates bounded exponential backoff. Retry-After may extend the delay
+ * but may not reduce the configured backoff for the current attempt.
  */
 function qboComputeRetryDelayMs_(attempt, response) {
   const configuredBase = Math.max(
@@ -216,14 +221,14 @@ function qboComputeRetryDelayMs_(attempt, response) {
     configuredBase,
     Number(QBO_REQUEST_POLICY.MAX_RETRY_DELAY_MS) || configuredBase
   );
+  const exponentialDelay =
+    configuredBase * Math.pow(2, Math.max(0, attempt - 1));
   const retryAfterMs = qboGetRetryAfterMs_(response);
+  const requestedDelay = retryAfterMs === null
+    ? exponentialDelay
+    : Math.max(exponentialDelay, retryAfterMs);
 
-  if (retryAfterMs !== null) {
-    return Math.min(retryAfterMs, configuredMax);
-  }
-
-  const exponentialDelay = configuredBase * Math.pow(2, Math.max(0, attempt - 1));
-  return Math.min(exponentialDelay, configuredMax);
+  return Math.min(requestedDelay, configuredMax);
 }
 
 
@@ -258,7 +263,26 @@ function qboParseJsonResponse_(response, context) {
   const requestContext = String(context || 'QBO request').trim() || 'QBO request';
   const status = response.getResponseCode();
   const responseText = response.getContentText() || '';
+  const isSuccess = status >= 200 && status < 300;
   let parsed = {};
+
+  if (!isSuccess) {
+    if (responseText) {
+      try {
+        parsed = JSON.parse(responseText);
+      } catch (error) {
+        parsed = {};
+      }
+    }
+
+    const faultDetails = qboFormatFaultDetails_(parsed);
+    const fallbackDetails = responseText.slice(0, 1000);
+    const details = faultDetails || fallbackDetails || 'No response body.';
+
+    throw new Error(
+      `${requestContext} failed. HTTP ${status}: ${details}`
+    );
+  }
 
   if (responseText) {
     try {
@@ -269,16 +293,6 @@ function qboParseJsonResponse_(response, context) {
         `HTTP ${status}: ${responseText.slice(0, 1000)}`
       );
     }
-  }
-
-  if (status < 200 || status >= 300) {
-    const faultDetails = qboFormatFaultDetails_(parsed);
-    const fallbackDetails = responseText.slice(0, 1000);
-    const details = faultDetails || fallbackDetails || 'No response body.';
-
-    throw new Error(
-      `${requestContext} failed. HTTP ${status}: ${details}`
-    );
   }
 
   return parsed;
