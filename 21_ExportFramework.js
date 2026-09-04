@@ -114,6 +114,7 @@ function writeExport_(config) {
 
     const sheet = withExportWriteLock_(
       config.sheetName,
+      getExportSpreadsheetId_(config.sheetName),
       function() {
         const writtenSheet = writeExportUnlocked_(config);
 
@@ -271,40 +272,162 @@ function logExportEvent_(status, metadata) {
 
 
 /**
- * Serializes mutation of the configured export workbook.
+ * Serializes mutation per destination workbook.
  *
- * The lock is scoped only to the write/format phase. QBO retrieval and row
- * construction occur before writeExport_() is called, so separate scheduled
- * exports do not spend their API-read time blocking one another.
- *
- * If another execution is still writing after the configured wait period,
- * this execution fails clearly rather than allowing concurrent workbook
- * mutation. Its next scheduled run or a manual rerun can then retry safely.
+ * A short ScriptLock protects only the lease registry. The actual spreadsheet
+ * write is protected by a workbook-keyed lease, so independent workbooks can
+ * write concurrently while same-workbook writes remain serialized.
  */
-function withExportWriteLock_(sheetName, callback) {
+function withExportWriteLock_(sheetName, workbookId, callback) {
   if (typeof callback !== 'function') {
     throw new Error(
       'withExportWriteLock_ requires a callback function.'
     );
   }
 
-  const lock = LockService.getScriptLock();
-  const waitMs = EXPORT_EXECUTION.WRITE_LOCK_WAIT_MS;
-  const acquired = lock.tryLock(waitMs);
-
-  if (!acquired) {
+  const normalizedWorkbookId = String(workbookId || '').trim();
+  if (!normalizedWorkbookId) {
     throw new Error(
-      'Unable to acquire QBO export workbook write lock within ' +
-      waitMs + ' ms for sheet ' + sheetName + '. ' +
-      'Another export is currently writing. Retry this export after the ' +
-      'other execution finishes.'
+      'withExportWriteLock_ requires a destination workbook ID for sheet ' +
+      String(sheetName || '') + '.'
     );
+  }
+
+  const waitMs = EXPORT_EXECUTION.WRITE_LOCK_WAIT_MS;
+  const pollMs = EXPORT_EXECUTION.WRITE_LEASE_POLL_MS;
+  const deadline = Date.now() + waitMs;
+  const leaseToken = Utilities.getUuid();
+  const leaseKey = buildExportWriteLeasePropertyKey_(normalizedWorkbookId);
+
+  while (true) {
+    if (tryAcquireExportWriteLease_(leaseKey, leaseToken)) {
+      break;
+    }
+
+    if (Date.now() >= deadline) {
+      throw new Error(
+        'Unable to acquire QBO export workbook write lease within ' +
+        waitMs + ' ms for sheet ' + sheetName + '. ' +
+        'Another execution is currently writing the same destination ' +
+        'workbook. Retry this export after that execution finishes.'
+      );
+    }
+
+    Utilities.sleep(Math.min(pollMs, Math.max(1, deadline - Date.now())));
   }
 
   try {
     return callback();
   } finally {
-    lock.releaseLock();
+    releaseExportWriteLease_(leaseKey, leaseToken);
+  }
+}
+
+
+/**
+ * Builds a bounded Script Property key for one destination-workbook lease.
+ * The workbook ID is hashed so the property name remains compact and stable.
+ */
+function buildExportWriteLeasePropertyKey_(workbookId) {
+  const digest = Utilities.computeDigest(
+    Utilities.DigestAlgorithm.SHA_256,
+    String(workbookId),
+    Utilities.Charset.UTF_8
+  );
+  const hex = digest.map(function(byte) {
+    return ('0' + ((byte + 256) % 256).toString(16)).slice(-2);
+  }).join('');
+
+  return 'QBO_EXPORT_WRITE_LEASE_' + hex.substring(0, 24).toUpperCase();
+}
+
+
+/**
+ * Atomically claims a destination-workbook lease. ScriptLock is held only
+ * while reading/writing the tiny lease registry entry; it is NOT held during
+ * spreadsheet mutation, so different destination workbooks can write in
+ * parallel.
+ */
+function tryAcquireExportWriteLease_(leaseKey, leaseToken) {
+  const registryLock = LockService.getScriptLock();
+  const acquiredRegistry = registryLock.tryLock(
+    EXPORT_EXECUTION.WRITE_LEASE_REGISTRY_LOCK_WAIT_MS
+  );
+
+  if (!acquiredRegistry) {
+    return false;
+  }
+
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const now = Date.now();
+    const raw = props.getProperty(leaseKey);
+    let existing = null;
+
+    if (raw) {
+      try {
+        existing = JSON.parse(raw);
+      } catch (ignored) {
+        existing = null;
+      }
+    }
+
+    if (
+      existing &&
+      String(existing.token || '') !== String(leaseToken) &&
+      Number(existing.expiresAt || 0) > now
+    ) {
+      return false;
+    }
+
+    props.setProperty(leaseKey, JSON.stringify({
+      token: leaseToken,
+      expiresAt: now + EXPORT_EXECUTION.WRITE_LEASE_MS
+    }));
+    return true;
+  } finally {
+    registryLock.releaseLock();
+  }
+}
+
+
+/**
+ * Releases only the lease owned by this execution. If the lease expired and a
+ * later execution replaced it, the newer owner's lease is preserved.
+ */
+function releaseExportWriteLease_(leaseKey, leaseToken) {
+  const registryLock = LockService.getScriptLock();
+  const acquiredRegistry = registryLock.tryLock(
+    EXPORT_EXECUTION.WRITE_LEASE_REGISTRY_LOCK_WAIT_MS
+  );
+
+  if (!acquiredRegistry) {
+    console.warn(
+      '[LOCK] | RELEASE DEFERRED | lease=' + leaseKey +
+      ' | reason=registry_lock_timeout | expiresAutomatically=true'
+    );
+    return;
+  }
+
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const raw = props.getProperty(leaseKey);
+    if (!raw) {
+      return;
+    }
+
+    let existing = null;
+    try {
+      existing = JSON.parse(raw);
+    } catch (ignored) {
+      existing = null;
+    }
+
+    if (existing && String(existing.token || '') === String(leaseToken)) {
+      props.deleteProperty(leaseKey);
+    }
+  } finally {
+    registryLock.releaseLock();
   }
 }
 

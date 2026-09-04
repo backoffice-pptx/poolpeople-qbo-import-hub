@@ -21,6 +21,9 @@
  *   - Remains in Application 50 unless a later approved architecture decision assigns a narrower reusable component elsewhere.
  *
  * Change History:
+ *   - 2026-09-03: Added isolated General Ledger report-export configuration.
+ *     Report extracts remain outside the 22-export daily entity manifest and
+ *     scheduler because they require explicit accounting date windows.
  *   - 2026-09-02: Added dedicated scheduled-run history/status workbook
  *     configuration for persistent daily export observability.
  *   - 2026-09-01: Added daily export scheduler policy for a chained, one-export-
@@ -66,9 +69,14 @@
  *     One configured Google Sheets file ID per export manifest entry.
  *   QBO_EXPORT_RUN_HISTORY_SPREADSHEET_ID
  *     Dedicated workbook for scheduled-run history and latest export status.
+ *   QBO_REPORT_GENERAL_LEDGER_SPREADSHEET_ID
+ *     Dedicated workbook for manual/date-window General Ledger report extracts.
  *
  * Optional Script Properties:
  *   QBO_MINORVERSION           Defaults to 75
+ *   QBO_REPORT_GENERAL_LEDGER_START_DATE / END_DATE
+ *     Optional yyyy-mm-dd override used by exportQboGeneralLedger(). If both
+ *     are absent, the last closed calendar month is exported.
  ***********************/
 
 const SCRIPT_PROPERTY_KEYS = Object.freeze({
@@ -76,7 +84,10 @@ const SCRIPT_PROPERTY_KEYS = Object.freeze({
   CLIENT_SECRET: 'QBO_CLIENT_SECRET',
   MINOR_VERSION: 'QBO_MINORVERSION',
   SNAPSHOT_FOLDER_ID: 'QBO_EXPORT_SNAPSHOT_FOLDER_ID',
-  RUN_HISTORY_SPREADSHEET_ID: 'QBO_EXPORT_RUN_HISTORY_SPREADSHEET_ID'
+  RUN_HISTORY_SPREADSHEET_ID: 'QBO_EXPORT_RUN_HISTORY_SPREADSHEET_ID',
+  GENERAL_LEDGER_REPORT_SPREADSHEET_ID: 'QBO_REPORT_GENERAL_LEDGER_SPREADSHEET_ID',
+  GENERAL_LEDGER_REPORT_START_DATE: 'QBO_REPORT_GENERAL_LEDGER_START_DATE',
+  GENERAL_LEDGER_REPORT_END_DATE: 'QBO_REPORT_GENERAL_LEDGER_END_DATE'
 });
 
 const EXPORT_DESTINATION = Object.freeze({
@@ -145,11 +156,15 @@ const EXPORT_LAYOUT = Object.freeze({
  *
  * Individual time-based triggers remain the production scheduling model.
  * Locking is intentionally scoped to writeExport_() so concurrent QBO reads
- * may proceed, while only one export table is allowed to mutate the workbook
- * at a time.
+ * may proceed. Write leases are keyed by destination workbook, allowing
+ * different independent workbooks to mutate concurrently while preventing
+ * overlapping writes to the same workbook.
  */
 const EXPORT_EXECUTION = Object.freeze({
-  WRITE_LOCK_WAIT_MS: 90000
+  WRITE_LOCK_WAIT_MS: 90000,
+  WRITE_LEASE_MS: 10 * 60 * 1000,
+  WRITE_LEASE_POLL_MS: 500,
+  WRITE_LEASE_REGISTRY_LOCK_WAIT_MS: 5000
 });
 
 /**
