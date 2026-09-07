@@ -16,8 +16,9 @@
  * Architecture:
  *   - One calendar month per Apps Script execution.
  *   - Calls exportQboGeneralLedgerForPeriod(); it does not duplicate extraction.
- *   - Default initial range is 2022-01 through 2026-06 because July/August 2026
- *     are already validated in the historical GL workbook.
+ *   - A new run reads its start/end month from the editable 00_Control sheet
+ *     in the dedicated General Ledger report workbook, then snapshots those
+ *     values into Script Properties as immutable run state.
  *   - Queue position advances only after a successful monthly export. If an
  *     execution is terminated by Apps Script, resume retries that same month.
  *   - Only one transient backfill trigger is maintained at a time.
@@ -25,8 +26,8 @@
  */
 
 const QBO_GL_BACKFILL = Object.freeze({
-  DEFAULT_START_MONTH: '2022-01',
-  DEFAULT_END_MONTH: '2026-06',
+  CONTROL_START_SETTING: 'GL_BACKFILL_START_MONTH',
+  CONTROL_END_SETTING: 'GL_BACKFILL_END_MONTH',
   NEXT_MONTH_DELAY_MS: 2 * 60 * 1000,
   HANDLER: 'runNextQboGeneralLedgerBackfillMonth'
 });
@@ -45,7 +46,8 @@ const QBO_GL_BACKFILL_PROPERTIES = Object.freeze({
 
 /** Starts the bounded initial historical backfill. */
 function startQboGeneralLedgerBackfill() {
-  validateQboGeneralLedgerBackfillConfiguration_();
+  const control = resolveQboGeneralLedgerBackfillControl_();
+  validateQboGeneralLedgerBackfillConfiguration_(control.startMonth, control.endMonth);
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
@@ -63,9 +65,9 @@ function startQboGeneralLedgerBackfill() {
     const startedAt = new Date().toISOString();
     props.setProperties({
       [QBO_GL_BACKFILL_PROPERTIES.RUN_ID]: runId,
-      [QBO_GL_BACKFILL_PROPERTIES.START_MONTH]: QBO_GL_BACKFILL.DEFAULT_START_MONTH,
-      [QBO_GL_BACKFILL_PROPERTIES.END_MONTH]: QBO_GL_BACKFILL.DEFAULT_END_MONTH,
-      [QBO_GL_BACKFILL_PROPERTIES.CURRENT_MONTH]: QBO_GL_BACKFILL.DEFAULT_START_MONTH,
+      [QBO_GL_BACKFILL_PROPERTIES.START_MONTH]: control.startMonth,
+      [QBO_GL_BACKFILL_PROPERTIES.END_MONTH]: control.endMonth,
+      [QBO_GL_BACKFILL_PROPERTIES.CURRENT_MONTH]: control.startMonth,
       [QBO_GL_BACKFILL_PROPERTIES.STATUS]: 'READY',
       [QBO_GL_BACKFILL_PROPERTIES.STARTED_AT]: startedAt,
       [QBO_GL_BACKFILL_PROPERTIES.LAST_COMPLETED_MONTH]: '',
@@ -75,12 +77,12 @@ function startQboGeneralLedgerBackfill() {
 
     console.log(
       '[GL BACKFILL] | START | runId=' + runId +
-      ' | range=' + QBO_GL_BACKFILL.DEFAULT_START_MONTH + '..' +
-      QBO_GL_BACKFILL.DEFAULT_END_MONTH +
+      ' | range=' + control.startMonth + '..' + control.endMonth +
       ' | months=' + countQboGeneralLedgerBackfillMonths_(
-        QBO_GL_BACKFILL.DEFAULT_START_MONTH,
-        QBO_GL_BACKFILL.DEFAULT_END_MONTH
-      )
+        control.startMonth,
+        control.endMonth
+      ) +
+      ' | source=GL_WORKBOOK_00_CONTROL'
     );
     scheduleNextQboGeneralLedgerBackfillTrigger_();
   } finally {
@@ -90,7 +92,7 @@ function startQboGeneralLedgerBackfill() {
 
 /** Resumes the same logical run at its current not-yet-completed month. */
 function resumeQboGeneralLedgerBackfill() {
-  validateQboGeneralLedgerBackfillConfiguration_();
+  testQboGeneralLedgerReportConfiguration();
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
@@ -120,7 +122,7 @@ function resumeQboGeneralLedgerBackfill() {
 
 /** Runs exactly one month, then schedules the next month only after success. */
 function runNextQboGeneralLedgerBackfillMonth() {
-  validateQboGeneralLedgerBackfillConfiguration_();
+  testQboGeneralLedgerReportConfiguration();
 
   // A one-time Apps Script trigger can remain visible/disabled after it fires.
   // Remove the trigger that launched this execution (and any stale duplicates)
@@ -276,11 +278,26 @@ function repairQboGeneralLedgerBackfillCompletedStatus() {
   }
 }
 
-function validateQboGeneralLedgerBackfillConfiguration_() {
+function resolveQboGeneralLedgerBackfillControl_() {
+  const settings = readQboGeneralLedgerControlSettings_();
+  const startMonth = String(settings[QBO_GL_BACKFILL.CONTROL_START_SETTING] || '').trim();
+  const endMonth = String(settings[QBO_GL_BACKFILL.CONTROL_END_SETTING] || '').trim();
+  if (!startMonth || !endMonth) {
+    throw new Error(
+      'Missing General Ledger backfill controls in ' +
+      QBO_GENERAL_LEDGER_REPORT.CONTROL_SHEET + ': ' +
+      QBO_GL_BACKFILL.CONTROL_START_SETTING + ' and ' +
+      QBO_GL_BACKFILL.CONTROL_END_SETTING + ' are required.'
+    );
+  }
+  return { startMonth: startMonth, endMonth: endMonth };
+}
+
+function validateQboGeneralLedgerBackfillConfiguration_(startMonth, endMonth) {
   testQboGeneralLedgerReportConfiguration();
-  qboGeneralLedgerMonthPeriod_(QBO_GL_BACKFILL.DEFAULT_START_MONTH);
-  qboGeneralLedgerMonthPeriod_(QBO_GL_BACKFILL.DEFAULT_END_MONTH);
-  if (QBO_GL_BACKFILL.DEFAULT_START_MONTH > QBO_GL_BACKFILL.DEFAULT_END_MONTH) {
+  qboGeneralLedgerMonthPeriod_(startMonth);
+  qboGeneralLedgerMonthPeriod_(endMonth);
+  if (startMonth > endMonth) {
     throw new Error('General Ledger backfill start month is after end month.');
   }
 }

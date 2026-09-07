@@ -6,6 +6,7 @@
  *
  * Public API:
  *   - provisionQboGeneralLedgerReportWorkbook()
+ *   - bootstrapQboGeneralLedgerControl()
  *   - exportQboGeneralLedger()
  *   - exportQboGeneralLedgerForPeriod(startDate, endDate)
  *   - testQboGeneralLedgerReportConfiguration()
@@ -39,6 +40,7 @@ const QBO_GENERAL_LEDGER_REPORT = Object.freeze({
   WORKBOOK_TITLE: 'QBO Export - General Ledger Report',
   DATA_SHEET: 'QBO_GeneralLedger',
   RUNS_SHEET: 'QBO_GeneralLedgerRuns',
+  CONTROL_SHEET: '00_Control',
   ACCOUNTING_METHOD: 'Cash',
   MAX_WORKBOOK_CELLS: 8000000
 });
@@ -70,6 +72,26 @@ const QBO_GENERAL_LEDGER_HEADERS = Object.freeze([
   'Balance',
   'ValuesJSON',
   'RawRowJSON'
+]);
+
+const QBO_GENERAL_LEDGER_CONTROL_HEADERS = Object.freeze([
+  'Setting',
+  'Value',
+  'Description',
+  'Last Updated'
+]);
+
+const QBO_GENERAL_LEDGER_CONTROL_DEFAULTS = Object.freeze([
+  Object.freeze([
+    'GL_BACKFILL_START_MONTH',
+    '2018-01',
+    'First month to process when a new General Ledger historical backfill is started.'
+  ]),
+  Object.freeze([
+    'GL_BACKFILL_END_MONTH',
+    '2021-12',
+    'Last month to process when a new General Ledger historical backfill is started.'
+  ])
 ]);
 
 const QBO_GENERAL_LEDGER_RUN_HEADERS = Object.freeze([
@@ -124,6 +146,20 @@ function provisionQboGeneralLedgerReportWorkbook() {
     spreadsheetId: spreadsheet.getId(),
     spreadsheetUrl: spreadsheet.getUrl()
   };
+}
+
+/**
+ * Ensures the editable General Ledger control sheet exists and returns its
+ * current settings. Existing control values are never overwritten.
+ *
+ * @return {Object} Current editable General Ledger control settings.
+ */
+function bootstrapQboGeneralLedgerControl() {
+  const spreadsheet = getQboGeneralLedgerReportSpreadsheet_();
+  ensureQboGeneralLedgerControlSheet_(spreadsheet);
+  const settings = readQboGeneralLedgerControlSettings_();
+  console.log('[GL CONTROL] | READY | ' + JSON.stringify(settings));
+  return settings;
 }
 
 /**
@@ -575,17 +611,98 @@ function getQboGeneralLedgerReportSpreadsheet_() {
 }
 
 function ensureQboGeneralLedgerWorkbookSheets_(spreadsheet) {
-  [QBO_GENERAL_LEDGER_REPORT.DATA_SHEET, QBO_GENERAL_LEDGER_REPORT.RUNS_SHEET]
-    .forEach(function(sheetName) {
-      if (!spreadsheet.getSheetByName(sheetName)) {
-        spreadsheet.insertSheet(sheetName);
-      }
-    });
+  [
+    QBO_GENERAL_LEDGER_REPORT.CONTROL_SHEET,
+    QBO_GENERAL_LEDGER_REPORT.DATA_SHEET,
+    QBO_GENERAL_LEDGER_REPORT.RUNS_SHEET
+  ].forEach(function(sheetName) {
+    if (!spreadsheet.getSheetByName(sheetName)) {
+      spreadsheet.insertSheet(sheetName);
+    }
+  });
+
+  ensureQboGeneralLedgerControlSheet_(spreadsheet);
 
   const defaultSheet = spreadsheet.getSheetByName('Sheet1');
-  if (defaultSheet && spreadsheet.getSheets().length > 2 && defaultSheet.getLastRow() === 0) {
+  if (defaultSheet && spreadsheet.getSheets().length > 3 && defaultSheet.getLastRow() === 0) {
     spreadsheet.deleteSheet(defaultSheet);
   }
+}
+
+function ensureQboGeneralLedgerControlSheet_(spreadsheet) {
+  let sheet = spreadsheet.getSheetByName(QBO_GENERAL_LEDGER_REPORT.CONTROL_SHEET);
+  if (!sheet) {
+    sheet = spreadsheet.insertSheet(QBO_GENERAL_LEDGER_REPORT.CONTROL_SHEET);
+  }
+
+  const headers = QBO_GENERAL_LEDGER_CONTROL_HEADERS.slice();
+  if (sheet.getMaxColumns() < headers.length) {
+    sheet.insertColumnsAfter(sheet.getMaxColumns(), headers.length - sheet.getMaxColumns());
+  }
+
+  const currentHeader = sheet.getRange(1, 1, 1, headers.length).getDisplayValues()[0];
+  const headerMatches = headers.every(function(value, index) {
+    return currentHeader[index] === value;
+  });
+  if (!headerMatches) {
+    if (sheet.getLastRow() > 0 && currentHeader.some(function(value) { return value !== ''; })) {
+      throw new Error(
+        'Schema mismatch in General Ledger control sheet ' +
+        QBO_GENERAL_LEDGER_REPORT.CONTROL_SHEET + '.'
+      );
+    }
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+  }
+
+  const existing = {};
+  if (sheet.getLastRow() > 1) {
+    sheet.getRange(2, 1, sheet.getLastRow() - 1, headers.length)
+      .getDisplayValues()
+      .forEach(function(row) {
+        const key = String(row[0] || '').trim();
+        if (key) existing[key] = true;
+      });
+  }
+
+  const now = new Date();
+  const rowsToAdd = QBO_GENERAL_LEDGER_CONTROL_DEFAULTS
+    .filter(function(definition) { return !existing[definition[0]]; })
+    .map(function(definition) {
+      return [definition[0], definition[1], definition[2], now];
+    });
+
+  if (rowsToAdd.length) {
+    sheet.getRange(sheet.getLastRow() + 1, 1, rowsToAdd.length, headers.length)
+      .setValues(rowsToAdd);
+  }
+
+  sheet.setFrozenRows(1);
+  sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
+  sheet.getRange(1, 1, Math.max(1, sheet.getLastRow()), headers.length).setWrap(false);
+  if (sheet.getLastRow() > 1) {
+    sheet.getRange(2, 4, sheet.getLastRow() - 1, 1).setNumberFormat('m/d/yyyy');
+  }
+  sheet.autoResizeColumns(1, headers.length);
+}
+
+function readQboGeneralLedgerControlSettings_() {
+  const spreadsheet = getQboGeneralLedgerReportSpreadsheet_();
+  const sheet = spreadsheet.getSheetByName(QBO_GENERAL_LEDGER_REPORT.CONTROL_SHEET);
+  if (!sheet) {
+    throw new Error(
+      'Missing General Ledger control sheet. Run bootstrapQboGeneralLedgerControl() first.'
+    );
+  }
+
+  const values = sheet.getLastRow() > 1
+    ? sheet.getRange(2, 1, sheet.getLastRow() - 1, 2).getDisplayValues()
+    : [];
+  const settings = {};
+  values.forEach(function(row) {
+    const key = String(row[0] || '').trim();
+    if (key) settings[key] = String(row[1] || '').trim();
+  });
+  return settings;
 }
 
 function upsertQboGeneralLedgerPeriod_(spreadsheet, rows, startDate, endDate) {
