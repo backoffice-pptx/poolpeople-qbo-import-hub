@@ -6,6 +6,12 @@
         "userSymbol": "OAuth2",
         "version": "43",
         "libraryId": "1B7FSrk5Zi6L1rSxxTDgDEUsPzlukDsi4KGuTMorsTQHhGBzBkMun4iDF"
+      },
+      {
+        "userSymbol": "DataPlatform05",
+        "version": "0",
+        "libraryId": "1uZMso812wpGqeNyPaOrgM3EhQy3FOxdcMcuYcf-R3WAhUW7BaeFPB8LO",
+        "developmentMode": true
       }
     ]
   },
