@@ -21,6 +21,7 @@
  *   - Remains in Application 50 unless a later approved architecture decision assigns a narrower reusable component elsewhere.
  *
  * Change History:
+ *   - 2026-09-10: Added canonical QBO State Capture workbook Script Property.
  *   - 2026-09-03: Added isolated General Ledger report-export configuration.
  *     Report extracts remain outside the 22-export daily entity manifest and
  *     scheduler because they require explicit accounting date windows.
@@ -71,6 +72,8 @@
  *     Dedicated workbook for scheduled-run history and latest export status.
  *   QBO_REPORT_GENERAL_LEDGER_SPREADSHEET_ID
  *     Dedicated workbook for manual/date-window General Ledger report extracts.
+ *   QBO_STATE_CAPTURE_SPREADSHEET_ID
+ *     Canonical QBO State Capture workbook under QuickBooks/Change Evidence/Captured States.
  *
  * Optional Script Properties:
  *   QBO_MINORVERSION           Defaults to 75
@@ -87,7 +90,8 @@ const SCRIPT_PROPERTY_KEYS = Object.freeze({
   RUN_HISTORY_SPREADSHEET_ID: 'QBO_EXPORT_RUN_HISTORY_SPREADSHEET_ID',
   GENERAL_LEDGER_REPORT_SPREADSHEET_ID: 'QBO_REPORT_GENERAL_LEDGER_SPREADSHEET_ID',
   GENERAL_LEDGER_REPORT_START_DATE: 'QBO_REPORT_GENERAL_LEDGER_START_DATE',
-  GENERAL_LEDGER_REPORT_END_DATE: 'QBO_REPORT_GENERAL_LEDGER_END_DATE'
+  GENERAL_LEDGER_REPORT_END_DATE: 'QBO_REPORT_GENERAL_LEDGER_END_DATE',
+  STATE_CAPTURE_SPREADSHEET_ID: 'QBO_STATE_CAPTURE_SPREADSHEET_ID'
 });
 
 const EXPORT_DESTINATION = Object.freeze({
