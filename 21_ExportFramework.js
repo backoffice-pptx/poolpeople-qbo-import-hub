@@ -78,6 +78,17 @@
 const QBO_EXPORTER_COMPLETION_STATE_ = Object.create(null);
 
 /**
+ * Per-execution master-backup metadata produced when an exporter completes.
+ *
+ * The existing backup-copy implementation is historically named "snapshot"
+ * in this codebase. Architecturally, those full workbook copies are Master
+ * Backups. This map lets the scheduled-run controller durably link the exact
+ * Master Backup file to QBO_ExportRunHistory without changing exporter public
+ * return contracts.
+ */
+const QBO_EXPORTER_MASTER_BACKUP_METADATA_ = Object.create(null);
+
+/**
  * Writes a complete export to a Google Sheet.
  *
  * Expected config:
@@ -221,6 +232,12 @@ function registerQboExporterSheetCompletion_(sheetName) {
   }
 
   const snapshot = createQboExportSnapshot_(entry.key);
+
+  QBO_EXPORTER_MASTER_BACKUP_METADATA_[entry.key] = {
+    masterBackupFileId: snapshot.snapshotFileId,
+    masterBackupFileName: snapshot.snapshotName
+  };
+
   const durationMs = Date.now() - state.firstCompletedAt;
 
   safeLog_(
@@ -239,6 +256,26 @@ function registerQboExporterSheetCompletion_(sheetName) {
     snapshot: snapshot,
     durationMs: durationMs
   };
+}
+
+
+/**
+ * Returns and clears the Master Backup metadata created for one exporter in
+ * the current Apps Script execution. Scheduled execution uses this immediately
+ * after the exporter returns successfully.
+ *
+ * @param {string} exportKey Stable QBO export manifest key.
+ * @return {Object|null} Master Backup metadata or null when none was produced.
+ */
+function consumeQboExporterMasterBackupMetadata_(exportKey) {
+  const key = String(exportKey || '').trim();
+  const metadata = QBO_EXPORTER_MASTER_BACKUP_METADATA_[key] || null;
+
+  if (metadata) {
+    delete QBO_EXPORTER_MASTER_BACKUP_METADATA_[key];
+  }
+
+  return metadata;
 }
 
 

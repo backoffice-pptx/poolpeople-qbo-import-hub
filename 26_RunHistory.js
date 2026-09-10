@@ -19,6 +19,7 @@
  *   - recordQboScheduledRunComplete_()
  *   - recordQboScheduledRunningExportsInterrupted_()
  *   - recordQboScheduledRunResumed_()
+ *   - upgradeQboRunHistoryMasterBackupSchema()
  *   - getQboScheduledRunResumeState_()
  *   - getLatestQboScheduledRunResumeState_()
  *
@@ -32,6 +33,9 @@
  *     before the next queue handoff.
  *
  * Change History:
+ *   - 2026-09-09: Added durable Master Backup file ID/name lineage to
+ *     QBO_ExportRunHistory. Existing populated workbooks can be upgraded
+ *     in place without replacing historical rows.
  *   - 2026-09-03: Added failure-path safeguards so interruption cleanup
  *     cannot overwrite a newer exporter status, and extracted the durable
  *     resume-state reducer for deterministic regression testing.
@@ -65,7 +69,9 @@ const QBO_RUN_HISTORY_HEADERS_ = Object.freeze({
     'CompletedAt',
     'Status',
     'DurationMs',
-    'Error'
+    'Error',
+    'MasterBackupFileId',
+    'MasterBackupFileName'
   ]),
   STATUS: Object.freeze([
     'ExportKey',
@@ -218,6 +224,9 @@ function initializeQboRunHistoryWorkbook_(spreadsheet) {
     QBO_RUN_HISTORY.RUNS_SHEET,
     QBO_RUN_HISTORY_HEADERS_.RUNS
   );
+
+  ensureQboRunHistoryMasterBackupSchema_(spreadsheet);
+
   ensureQboRunHistorySheet_(
     spreadsheet,
     QBO_RUN_HISTORY.EXPORTS_SHEET,
@@ -260,6 +269,69 @@ function initializeQboRunHistoryWorkbook_(spreadsheet) {
   });
 }
 
+
+/**
+ * Upgrades an existing populated QBO_ExportRunHistory sheet in place by
+ * appending the two Master Backup lineage columns. Safe to rerun.
+ */
+function upgradeQboRunHistoryMasterBackupSchema() {
+  const spreadsheet = getQboRunHistorySpreadsheet_();
+  ensureQboRunHistoryMasterBackupSchema_(spreadsheet);
+  console.log(
+    '[RUN HISTORY] | MASTER BACKUP SCHEMA OK | workbook=' +
+    spreadsheet.getName()
+  );
+}
+
+/**
+ * Adds MasterBackupFileId and MasterBackupFileName only when the sheet has the
+ * exact legacy nine-column schema. Any conflicting populated header is fatal.
+ */
+function ensureQboRunHistoryMasterBackupSchema_(spreadsheet) {
+  const sheet = spreadsheet.getSheetByName(QBO_RUN_HISTORY.EXPORTS_SHEET);
+  if (!sheet) {
+    return;
+  }
+
+  const legacyHeaders = QBO_RUN_HISTORY_HEADERS_.EXPORTS.slice(0, 9);
+  const existing = sheet.getRange(1, 1, 1, 11).getValues()[0];
+
+  legacyHeaders.forEach(function(expected, index) {
+    const actual = existing[index];
+    if (actual !== expected) {
+      throw new Error(
+        'Cannot upgrade ' + QBO_RUN_HISTORY.EXPORTS_SHEET +
+        ': legacy header mismatch at column ' + (index + 1) +
+        '. Expected ' + expected + ', found ' + actual + '.'
+      );
+    }
+  });
+
+  const idHeader = String(existing[9] || '').trim();
+  const nameHeader = String(existing[10] || '').trim();
+
+  if (
+    idHeader === 'MasterBackupFileId' &&
+    nameHeader === 'MasterBackupFileName'
+  ) {
+    return;
+  }
+
+  if (idHeader || nameHeader) {
+    throw new Error(
+      'Cannot upgrade ' + QBO_RUN_HISTORY.EXPORTS_SHEET +
+      ': columns J/K already contain unexpected headers: ' +
+      idHeader + ' / ' + nameHeader + '.'
+    );
+  }
+
+  sheet.getRange(1, 10, 1, 2).setValues([[
+    'MasterBackupFileId',
+    'MasterBackupFileName'
+  ]]);
+  sheet.setFrozenRows(1);
+}
+
 function ensureQboRunHistorySheet_(spreadsheet, sheetName, headers) {
   let sheet = spreadsheet.getSheetByName(sheetName);
 
@@ -298,6 +370,8 @@ function ensureQboRunHistorySheet_(spreadsheet, sheetName, headers) {
 }
 
 function validateQboRunHistoryWorkbookStructure_(spreadsheet) {
+  ensureQboRunHistoryMasterBackupSchema_(spreadsheet);
+
   const required = [
     [QBO_RUN_HISTORY.RUNS_SHEET, QBO_RUN_HISTORY_HEADERS_.RUNS],
     [QBO_RUN_HISTORY.EXPORTS_SHEET, QBO_RUN_HISTORY_HEADERS_.EXPORTS],
@@ -377,6 +451,7 @@ function recordQboScheduledRunStart_(runId, startedAt, totalExports) {
 
 function recordQboScheduledExportStart_(runId, position, entry, startedAt) {
   const spreadsheet = getQboRunHistorySpreadsheet_();
+  ensureQboRunHistoryMasterBackupSchema_(spreadsheet);
   const exportsSheet = spreadsheet.getSheetByName(QBO_RUN_HISTORY.EXPORTS_SHEET);
   const statusSheet = spreadsheet.getSheetByName(QBO_RUN_HISTORY.STATUS_SHEET);
 
@@ -388,6 +463,8 @@ function recordQboScheduledExportStart_(runId, position, entry, startedAt) {
     new Date(startedAt),
     '',
     'RUNNING',
+    '',
+    '',
     '',
     ''
   ]);
@@ -402,7 +479,7 @@ function recordQboScheduledExportStart_(runId, position, entry, startedAt) {
   ]);
 }
 
-function recordQboScheduledExportResult_(runId, entry, completedAt, status, durationMs, errorMessage) {
+function recordQboScheduledExportResult_(runId, entry, completedAt, status, durationMs, errorMessage, masterBackupMetadata) {
   const spreadsheet = getQboRunHistorySpreadsheet_();
   const exportsSheet = spreadsheet.getSheetByName(QBO_RUN_HISTORY.EXPORTS_SHEET);
   const statusSheet = spreadsheet.getSheetByName(QBO_RUN_HISTORY.STATUS_SHEET);
@@ -415,11 +492,15 @@ function recordQboScheduledExportResult_(runId, entry, completedAt, status, dura
     );
   }
 
-  exportsSheet.getRange(rowNumber, 6, 1, 4).setValues([[
+  const backup = masterBackupMetadata || {};
+
+  exportsSheet.getRange(rowNumber, 6, 1, 6).setValues([[
     new Date(completedAt),
     status,
     durationMs,
-    errorMessage || ''
+    errorMessage || '',
+    backup.masterBackupFileId || '',
+    backup.masterBackupFileName || ''
   ]]);
 
   const startedAt = exportsSheet.getRange(rowNumber, 5).getValue();

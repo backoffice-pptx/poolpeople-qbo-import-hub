@@ -399,9 +399,19 @@ function runNextScheduledQboExport() {
   }, 'export start', runId, exportKey);
 
   let exportError = null;
+  let masterBackupMetadata = null;
 
   try {
     invokeScheduledQboExporter_(entry.exportFunctionName);
+    masterBackupMetadata = consumeQboExporterMasterBackupMetadata_(exportKey);
+
+    if (!masterBackupMetadata) {
+      throw new Error(
+        'Exporter completed without returning Master Backup metadata for ' +
+        exportKey + '.'
+      );
+    }
+
     console.log(
       '[SCHEDULE] | EXPORT COMPLETE | runId=' + runId +
       ' | export=' + exportKey
@@ -413,7 +423,8 @@ function runNextScheduledQboExport() {
         new Date(),
         'COMPLETE',
         Date.now() - exportStartedAt.getTime(),
-        ''
+        '',
+        masterBackupMetadata
       );
     }, 'export complete', runId, exportKey);
   } catch (err) {
