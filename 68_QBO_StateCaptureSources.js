@@ -14,6 +14,11 @@
  *   - auditQboLegacyFullExportSourceRegistration()
  *   - registerQboLegacyFullExportSources()
  *
+ * Internal production integration:
+ *   - registerQboCompletedFullExportSource_(runId, exportKey)
+ *     registers only the just-completed scheduled FULL_EXPORT after durable
+ *     QBO_ExportRunHistory completion has been recorded.
+ *
  * Architecture:
  *   - QBO_ExportRunHistory remains authoritative acquisition history.
  *   - 01_Sources is a State Capture processing/control ledger only.
@@ -80,6 +85,201 @@ function testQboStateCaptureConfiguration() {
   );
 }
 
+
+
+/**
+ * Registers exactly one completed, run-history-backed FULL_EXPORT source.
+ *
+ * This is the production handoff used by the scheduled export controller after
+ * recordQboScheduledExportResult_() has durably marked the exact exporter row
+ * COMPLETE and linked its Master Backup. It deliberately re-reads
+ * QBO_ExportRunHistory instead of trusting in-memory exporter metadata, so
+ * State Capture cannot get ahead of the authoritative acquisition history.
+ *
+ * Idempotent: an already-registered SourceId is treated as success/no-op.
+ * State Capture failure is intentionally separate from QBO export success; the
+ * scheduler calls this through a non-throwing wrapper.
+ *
+ * @param {string} runId Scheduled FULL_EXPORT RunId.
+ * @param {string} exportKey Stable manifest ExportKey.
+ * @return {Object} Registration result.
+ */
+function registerQboCompletedFullExportSource_(runId, exportKey) {
+  const normalizedRunId = String(runId || '').trim();
+  const normalizedExportKey = String(exportKey || '').trim();
+
+  if (!normalizedRunId || !normalizedExportKey) {
+    throw new Error(
+      'Automatic State Capture registration requires runId and exportKey.'
+    );
+  }
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(QBO_STATE_CAPTURE.EXECUTION_LOCK_TIMEOUT_MS);
+
+  try {
+    const stateSpreadsheet = getQboStateCaptureSpreadsheet_();
+    validateQboStateCaptureWorkbookStructure_(stateSpreadsheet);
+    validateQboStateCaptureWorkbookLocation_(stateSpreadsheet);
+
+    const runHistory = getQboRunHistorySpreadsheet_();
+    validateQboRunHistoryWorkbookStructure_(runHistory);
+
+    const exportSheet = runHistory.getSheetByName(QBO_RUN_HISTORY.EXPORTS_SHEET);
+    const sourceSheet = stateSpreadsheet.getSheetByName(QBO_STATE_CAPTURE.SHEETS.SOURCES);
+    const rowNumber = findQboExportRunRow_(
+      exportSheet,
+      normalizedRunId,
+      normalizedExportKey
+    );
+
+    if (!rowNumber) {
+      throw new Error(
+        'Automatic State Capture registration cannot locate QBO_ExportRunHistory row' +
+        ' for runId=' + normalizedRunId + ', export=' + normalizedExportKey + '.'
+      );
+    }
+
+    const row = exportSheet.getRange(
+      rowNumber,
+      1,
+      1,
+      QBO_RUN_HISTORY_HEADERS_.EXPORTS.length
+    ).getValues()[0];
+
+    const status = String(row[6] || '').trim();
+    const historyExportFunction = String(row[3] || '').trim();
+    const masterBackupFileId = String(row[9] || '').trim();
+    const masterBackupFileName = String(row[10] || '').trim();
+
+    if (status !== 'COMPLETE') {
+      throw new Error(
+        'Automatic State Capture registration requires COMPLETE run history; found ' +
+        (status || '(blank)') + ' for runId=' + normalizedRunId +
+        ', export=' + normalizedExportKey + '.'
+      );
+    }
+
+    if (!masterBackupFileId || !masterBackupFileName) {
+      throw new Error(
+        'Automatic State Capture registration requires exact Master Backup lineage' +
+        ' for runId=' + normalizedRunId + ', export=' + normalizedExportKey + '.'
+      );
+    }
+
+    const manifestEntry = getQboExportManifestEntry_(normalizedExportKey);
+    if (!manifestEntry) {
+      throw new Error(
+        'Automatic State Capture registration found unknown export key: ' +
+        normalizedExportKey + '.'
+      );
+    }
+
+    if (manifestEntry.exportFunctionName !== historyExportFunction) {
+      throw new Error(
+        'Automatic State Capture registration export-function mismatch for ' +
+        normalizedExportKey + '. Expected ' + manifestEntry.exportFunctionName +
+        ', found ' + historyExportFunction + '.'
+      );
+    }
+
+    const backupValidation = validateQboMasterBackupReference_(
+      masterBackupFileId,
+      masterBackupFileName
+    );
+    if (!backupValidation.valid) {
+      throw new Error(
+        'Automatic State Capture registration rejected Master Backup for ' +
+        normalizedExportKey + ': ' + backupValidation.reason + '.'
+      );
+    }
+
+    const sourceId = buildQboFullExportSourceId_(
+      normalizedRunId,
+      normalizedExportKey
+    );
+    const existingSourceIds = loadQboExistingStateCaptureSourceIds_(sourceSheet);
+
+    if (existingSourceIds[sourceId]) {
+      console.log(
+        '[STATE CAPTURE SOURCES] | AUTO REGISTER | status=ALREADY_REGISTERED' +
+        ' | runId=' + normalizedRunId +
+        ' | export=' + normalizedExportKey +
+        ' | sourceId=' + sourceId
+      );
+      return {
+        sourceId: sourceId,
+        registered: false,
+        alreadyRegistered: true
+      };
+    }
+
+    const scope = getQboStateCaptureFullExportScope_(normalizedExportKey);
+    sourceSheet.getRange(
+      sourceSheet.getLastRow() + 1,
+      1,
+      1,
+      QBO_STATE_CAPTURE_HEADERS.SOURCES.length
+    ).setValues([[
+      sourceId,
+      QBO_STATE_CAPTURE.SOURCE_ACQUISITION_TYPE,
+      normalizedRunId,
+      normalizedExportKey,
+      historyExportFunction,
+      row[4] || '',
+      row[5] || '',
+      masterBackupFileId,
+      masterBackupFileName,
+      QBO_STATE_CAPTURE.LINEAGE_BASIS_RUN_HISTORY,
+      scope.sourceScopeType,
+      scope.sourceScopeStart,
+      scope.sourceScopeEnd,
+      scope.sourceScopeComplete,
+      QBO_STATE_CAPTURE.SOURCE_STATUS_AVAILABLE,
+      new Date(),
+      '',
+      QBO_STATE_CAPTURE.PROCESSING_STATUS_UNPROCESSED,
+      ''
+    ]]);
+    applyQboStateCaptureSheetLayout_(sourceSheet);
+
+    console.log(
+      '[STATE CAPTURE SOURCES] | AUTO REGISTER | status=REGISTERED' +
+      ' | runId=' + normalizedRunId +
+      ' | export=' + normalizedExportKey +
+      ' | sourceId=' + sourceId +
+      ' | masterBackup=' + masterBackupFileName
+    );
+
+    return {
+      sourceId: sourceId,
+      registered: true,
+      alreadyRegistered: false
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * Non-throwing production wrapper. A State Capture registration failure must
+ * remain visible in logs but must never retroactively turn a successful QBO
+ * export into an exporter failure.
+ */
+function safeRegisterQboCompletedFullExportSource_(runId, exportKey) {
+  try {
+    return registerQboCompletedFullExportSource_(runId, exportKey);
+  } catch (error) {
+    console.error(
+      '[STATE CAPTURE SOURCES] | AUTO REGISTER ERROR' +
+      ' | runId=' + (runId || '') +
+      ' | export=' + (exportKey || '') +
+      ' | error=' + (error && error.message ? error.message : String(error))
+    );
+    return null;
+  }
+}
+
 function auditQboFullExportSourceRegistration() {
   return processQboFullExportSourceRegistration_(false);
 }
@@ -126,7 +326,6 @@ function processQboFullExportSourceRegistration_(applyChanges) {
 
     const sourceRowsToAppend = [];
     const skippedDetails = [];
-    const eligibleDetails = [];
     let eligibleSources = 0;
     let alreadyRegistered = 0;
 
@@ -231,7 +430,6 @@ function processQboFullExportSourceRegistration_(applyChanges) {
       wouldRegister: applyChanges ? 0 : sourceRowsToAppend.length,
       skippedSources: skippedDetails.length,
       actionRequired: skippedDetails.length > 0,
-      eligibleDetails: eligibleDetails,
       skippedDetails: skippedDetails
     };
 
@@ -363,7 +561,6 @@ function processQboLegacyFullExportSourceRegistration_(applyChanges) {
 
     const sourceRowsToAppend = [];
     const skippedDetails = [];
-    const eligibleDetails = [];
     let eligibleSources = 0;
     let alreadyRegistered = 0;
 
@@ -416,12 +613,6 @@ function processQboLegacyFullExportSourceRegistration_(applyChanges) {
       }
 
       eligibleSources += 1;
-      eligibleDetails.push({
-        masterBackupCreatedAt: candidate.createdAt,
-        masterBackupFileName: candidate.fileName,
-        exportKey: entry.key,
-        masterBackupFileId: candidate.fileId
-      });
       const sourceId = buildQboLegacyFullExportSourceId_(
         candidate.fileId,
         entry.key
@@ -482,7 +673,6 @@ function processQboLegacyFullExportSourceRegistration_(applyChanges) {
       wouldRegister: applyChanges ? 0 : sourceRowsToAppend.length,
       skippedSources: skippedDetails.length,
       actionRequired: skippedDetails.length > 0,
-      eligibleDetails: eligibleDetails,
       skippedDetails: skippedDetails
     };
 

@@ -3,7 +3,8 @@
  * Module      : 67_QBO_StateCaptureConfig.js
  * Purpose     : Configuration and schema contract for the canonical QBO State
  *               Capture workbook and FULL_EXPORT source registration,
- *               including controlled pre-run-history Master Backup evidence.
+ *               including controlled pre-run-history Master Backup evidence
+ *               and automatic registration of newly completed scheduled exports.
  *
  * Architecture:
  *   - QBO_ExportRunHistory remains the authoritative acquisition history for
@@ -21,7 +22,7 @@
  */
 
 const QBO_STATE_CAPTURE = Object.freeze({
-  VERSION: '1.1.0',
+  VERSION: '1.2.0',
   WORKBOOK_TITLE: 'QBO State Capture',
   ENVIRONMENT: 'PROD',
   CAPTURED_STATES_FOLDER_ASSET_KEY: 'QBO_CAPTURED_STATES_FOLDER',

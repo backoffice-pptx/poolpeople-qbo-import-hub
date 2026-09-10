@@ -427,6 +427,13 @@ function runNextScheduledQboExport() {
         masterBackupMetadata
       );
     }, 'export complete', runId, exportKey);
+
+    // State Capture registration is downstream of the durable COMPLETE
+    // run-history write. The helper re-reads that exact row and is deliberately
+    // non-throwing so State Capture cannot retroactively fail a successful QBO
+    // export. If run-history persistence failed, registration will also refuse
+    // to proceed because no authoritative COMPLETE source exists yet.
+    safeRegisterQboCompletedFullExportSource_(runId, exportKey);
   } catch (err) {
     exportError = err;
     failedCount += 1;
@@ -472,6 +479,124 @@ function runNextScheduledQboExport() {
 
   if (exportError) {
     throw exportError;
+  }
+}
+
+/**
+ * Controlled one-export production-path test for State Capture auto-registration.
+ *
+ * Runs PAYMENT_METHODS as a real one-export acquisition without initializing the
+ * daily queue or creating any triggers. It writes a legitimate one-export run
+ * and export history record, creates the normal Master Backup, then invokes the
+ * same State Capture auto-registration helper used by runNextScheduledQboExport().
+ *
+ * This is intentionally manual-only and must never be installed as a trigger.
+ */
+function testQboStateCaptureAutoRegistrationOnce() {
+  validateDailyQboExportSchedule_();
+
+  const exportKey = 'PAYMENT_METHODS';
+  const entry = getQboExportManifestEntry_(exportKey);
+  if (!entry) {
+    throw new Error('Unable to resolve controlled test export: ' + exportKey + '.');
+  }
+
+  const runId = 'STATE_CAPTURE_AUTOREG_TEST_' + Utilities.getUuid();
+  const startedAt = new Date();
+  let masterBackupMetadata = null;
+
+  console.log(
+    '[STATE CAPTURE AUTO TEST] | START' +
+    ' | runId=' + runId +
+    ' | export=' + exportKey +
+    ' | function=' + entry.exportFunctionName
+  );
+
+  recordQboScheduledRunStart_(runId, startedAt, 1);
+  recordQboScheduledRunProgress_(runId, 0, 0, 1, exportKey);
+  recordQboScheduledExportStart_(runId, 1, entry, startedAt);
+
+  try {
+    invokeScheduledQboExporter_(entry.exportFunctionName);
+    masterBackupMetadata = consumeQboExporterMasterBackupMetadata_(exportKey);
+
+    if (!masterBackupMetadata) {
+      throw new Error(
+        'Controlled test exporter completed without returning Master Backup metadata for ' +
+        exportKey + '.'
+      );
+    }
+
+    const completedAt = new Date();
+    recordQboScheduledExportResult_(
+      runId,
+      entry,
+      completedAt,
+      'COMPLETE',
+      completedAt.getTime() - startedAt.getTime(),
+      '',
+      masterBackupMetadata
+    );
+
+    const registration = registerQboCompletedFullExportSource_(runId, exportKey);
+
+    recordQboScheduledRunProgress_(runId, 1, 0, 1, '');
+    recordQboScheduledRunComplete_(runId, new Date(), 1, 0);
+
+    console.log(
+      '[STATE CAPTURE AUTO TEST] | COMPLETE' +
+      ' | runId=' + runId +
+      ' | export=' + exportKey +
+      ' | masterBackup=' + masterBackupMetadata.masterBackupFileName +
+      ' | registered=' + Boolean(registration && registration.registered) +
+      ' | alreadyRegistered=' + Boolean(registration && registration.alreadyRegistered)
+    );
+
+    return {
+      runId: runId,
+      exportKey: exportKey,
+      masterBackupFileId: masterBackupMetadata.masterBackupFileId,
+      masterBackupFileName: masterBackupMetadata.masterBackupFileName,
+      registration: registration
+    };
+  } catch (error) {
+    const completedAt = new Date();
+    try {
+      recordQboScheduledExportResult_(
+        runId,
+        entry,
+        completedAt,
+        'ERROR',
+        completedAt.getTime() - startedAt.getTime(),
+        error && error.message ? error.message : String(error),
+        masterBackupMetadata
+      );
+    } catch (historyError) {
+      console.error(
+        '[STATE CAPTURE AUTO TEST] | HISTORY ERROR' +
+        ' | runId=' + runId +
+        ' | error=' + (historyError && historyError.message ? historyError.message : historyError)
+      );
+    }
+
+    try {
+      recordQboScheduledRunProgress_(runId, 0, 1, 1, '');
+      recordQboScheduledRunComplete_(runId, completedAt, 0, 1);
+    } catch (runHistoryError) {
+      console.error(
+        '[STATE CAPTURE AUTO TEST] | RUN HISTORY ERROR' +
+        ' | runId=' + runId +
+        ' | error=' + (runHistoryError && runHistoryError.message ? runHistoryError.message : runHistoryError)
+      );
+    }
+
+    console.error(
+      '[STATE CAPTURE AUTO TEST] | ERROR' +
+      ' | runId=' + runId +
+      ' | export=' + exportKey +
+      ' | error=' + (error && error.message ? error.message : error)
+    );
+    throw error;
   }
 }
 
