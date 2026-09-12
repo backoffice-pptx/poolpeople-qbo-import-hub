@@ -54,10 +54,22 @@ const BILL_HEADERS = [
   // Dates
   'TxnDate',
   'DueDate',
+  'TxnSource',
 
   // Vendor
   'VendorId',
   'VendorName',
+  'VendorAddrId',
+  'VendorAddrLine1',
+  'VendorAddrLine2',
+  'VendorAddrLine3',
+  'VendorAddrLine4',
+  'VendorAddrLine5',
+  'VendorAddrCity',
+  'VendorAddrState',
+  'VendorAddrPostalCode',
+  'VendorAddrCountry',
+  'VendorAddrJSON',
 
   // Accounts Payable
   'APAccountId',
@@ -108,24 +120,10 @@ const BILL_HEADERS = [
 
   // Linked Transactions
   'LinkedTransactionCount',
-  'LinkedInvoiceCount',
-  'LinkedInvoiceIds',
-  'LinkedPaymentCount',
-  'LinkedPaymentIds',
-  'LinkedSalesReceiptCount',
-  'LinkedSalesReceiptIds',
-  'LinkedEstimateCount',
-  'LinkedEstimateIds',
-  'LinkedCreditMemoCount',
-  'LinkedCreditMemoIds',
-  'LinkedDepositCount',
-  'LinkedDepositIds',
-  'LinkedBillCount',
-  'LinkedBillIds',
-  'LinkedJournalEntryCount',
-  'LinkedJournalEntryIds',
-  'LinkedPurchaseCount',
-  'LinkedPurchaseIds',
+
+  'LinkedBillPaymentCheckCount',
+  'LinkedBillPaymentCheckIds',
+
   'LinkedOtherTransactionCount',
   'LinkedOtherTransactionsJSON',
   'LinkedTransactionsJSON',
@@ -194,24 +192,7 @@ const BILL_LINE_HEADERS = [
 
   // Linked Transactions
   'LinkedTransactionCount',
-  'LinkedInvoiceCount',
-  'LinkedInvoiceIds',
-  'LinkedPaymentCount',
-  'LinkedPaymentIds',
-  'LinkedSalesReceiptCount',
-  'LinkedSalesReceiptIds',
-  'LinkedEstimateCount',
-  'LinkedEstimateIds',
-  'LinkedCreditMemoCount',
-  'LinkedCreditMemoIds',
-  'LinkedDepositCount',
-  'LinkedDepositIds',
-  'LinkedBillCount',
-  'LinkedBillIds',
-  'LinkedJournalEntryCount',
-  'LinkedJournalEntryIds',
-  'LinkedPurchaseCount',
-  'LinkedPurchaseIds',
+
   'LinkedOtherTransactionCount',
   'LinkedOtherTransactionsJSON',
   'LinkedTransactionsJSON',
@@ -353,7 +334,7 @@ function buildBillRows_(bills) {
       nestedValue_(bill, 'TxnTaxDetail.TaxLine')
     );
 
-    const linked = summarizeLinkedTransactions_(bill.LinkedTxn);
+    const linked = summarizeLinkedTransactionsForTypes_(bill.LinkedTxn, ['BillPaymentCheck']);
 
     return [
       // Identity
@@ -364,10 +345,22 @@ function buildBillRows_(bills) {
       // Dates
       valueOrBlank_(bill.TxnDate),
       valueOrBlank_(bill.DueDate),
+      valueOrBlank_(bill.TxnSource),
 
       // Vendor
       nestedValue_(bill, 'VendorRef.value'),
       nestedValue_(bill, 'VendorRef.name'),
+      nestedValue_(bill, 'VendorAddr.Id'),
+      nestedValue_(bill, 'VendorAddr.Line1'),
+      nestedValue_(bill, 'VendorAddr.Line2'),
+      nestedValue_(bill, 'VendorAddr.Line3'),
+      nestedValue_(bill, 'VendorAddr.Line4'),
+      nestedValue_(bill, 'VendorAddr.Line5'),
+      nestedValue_(bill, 'VendorAddr.City'),
+      nestedValue_(bill, 'VendorAddr.CountrySubDivisionCode'),
+      nestedValue_(bill, 'VendorAddr.PostalCode'),
+      nestedValue_(bill, 'VendorAddr.Country'),
+      jsonStringifyCellSafe_(bill.VendorAddr),
 
       // Accounts Payable
       nestedValue_(bill, 'APAccountRef.value'),
@@ -417,25 +410,9 @@ function buildBillRows_(bills) {
       valueOrBlank_(bill.PrivateNote),
 
       // Linked Transactions
-      linked.totalCount,
-      linked.invoiceCount,
-      linked.invoiceIds,
-      linked.paymentCount,
-      linked.paymentIds,
-      linked.salesReceiptCount,
-      linked.salesReceiptIds,
-      linked.estimateCount,
-      linked.estimateIds,
-      linked.creditMemoCount,
-      linked.creditMemoIds,
-      linked.depositCount,
-      linked.depositIds,
-      linked.billCount,
-      linked.billIds,
-      linked.journalEntryCount,
-      linked.journalEntryIds,
-      linked.purchaseCount,
-      linked.purchaseIds,
+            linked.totalCount,
+      linkedTxnTypeCount_(linked, 'BillPaymentCheck'),
+      linkedTxnTypeIds_(linked, 'BillPaymentCheck'),
       linked.otherCount,
       jsonStringifyCellSafe_(linked.otherTransactions),
       jsonStringifyCellSafe_(bill.LinkedTxn),
@@ -496,7 +473,7 @@ function appendBillLineRow_(rows, bill, line, fallbackLineNumber) {
     ? suppliedLineNumber
     : fallbackLineNumber;
 
-  const linked = summarizeLinkedTransactions_(line.LinkedTxn);
+  const linked = summarizeLinkedTransactionsForTypes_(line.LinkedTxn, []);
 
   rows.push([
     // Parent Bill
@@ -550,25 +527,7 @@ function appendBillLineRow_(rows, bill, line, fallbackLineNumber) {
     nestedValue_(detail, 'MarkupInfo.MarkupIncomeAccountRef.name'),
 
     // Linked Transactions
-    linked.totalCount,
-    linked.invoiceCount,
-    linked.invoiceIds,
-    linked.paymentCount,
-    linked.paymentIds,
-    linked.salesReceiptCount,
-    linked.salesReceiptIds,
-    linked.estimateCount,
-    linked.estimateIds,
-    linked.creditMemoCount,
-    linked.creditMemoIds,
-    linked.depositCount,
-    linked.depositIds,
-    linked.billCount,
-    linked.billIds,
-    linked.journalEntryCount,
-    linked.journalEntryIds,
-    linked.purchaseCount,
-    linked.purchaseIds,
+        linked.totalCount,
     linked.otherCount,
     jsonStringifyCellSafe_(linked.otherTransactions),
     jsonStringifyCellSafe_(line.LinkedTxn),

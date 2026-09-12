@@ -337,17 +337,25 @@ function withExportWriteLock_(sheetName, workbookId, callback) {
   const leaseKey = buildExportWriteLeasePropertyKey_(normalizedWorkbookId);
 
   while (true) {
-    if (tryAcquireExportWriteLease_(leaseKey, leaseToken)) {
+    if (tryAcquireExportWriteLease_(leaseKey, leaseToken, {
+      sheetName: String(sheetName || ''),
+      schedulerContext: getQboSchedulerLeaseContext_()
+    })) {
       break;
     }
 
     if (Date.now() >= deadline) {
-      throw new Error(
+      const owner = readExportWriteLeaseInfo_(leaseKey);
+      const error = new Error(
         'Unable to acquire QBO export workbook write lease within ' +
         waitMs + ' ms for sheet ' + sheetName + '. ' +
         'Another execution is currently writing the same destination ' +
-        'workbook. Retry this export after that execution finishes.'
+        'workbook.' + formatExportWriteLeaseOwnerForError_(owner)
       );
+      error.code = 'QBO_WRITE_LEASE_BUSY';
+      error.retryable = true;
+      error.leaseOwner = owner;
+      throw error;
     }
 
     Utilities.sleep(Math.min(pollMs, Math.max(1, deadline - Date.now())));
@@ -385,7 +393,7 @@ function buildExportWriteLeasePropertyKey_(workbookId) {
  * spreadsheet mutation, so different destination workbooks can write in
  * parallel.
  */
-function tryAcquireExportWriteLease_(leaseKey, leaseToken) {
+function tryAcquireExportWriteLease_(leaseKey, leaseToken, metadata) {
   const registryLock = LockService.getScriptLock();
   const acquiredRegistry = registryLock.tryLock(
     EXPORT_EXECUTION.WRITE_LEASE_REGISTRY_LOCK_WAIT_MS
@@ -417,9 +425,18 @@ function tryAcquireExportWriteLease_(leaseKey, leaseToken) {
       return false;
     }
 
+    const schedulerContext = metadata && metadata.schedulerContext
+      ? metadata.schedulerContext
+      : {};
+
     props.setProperty(leaseKey, JSON.stringify({
       token: leaseToken,
-      expiresAt: now + EXPORT_EXECUTION.WRITE_LEASE_MS
+      acquiredAt: now,
+      expiresAt: now + EXPORT_EXECUTION.WRITE_LEASE_MS,
+      sheetName: metadata && metadata.sheetName ? metadata.sheetName : '',
+      runId: schedulerContext.runId || '',
+      exportKey: schedulerContext.exportKey || '',
+      workerToken: schedulerContext.workerToken || ''
     }));
     return true;
   } finally {
@@ -427,6 +444,59 @@ function tryAcquireExportWriteLease_(leaseKey, leaseToken) {
   }
 }
 
+
+function getQboSchedulerLeaseContext_() {
+  try {
+    const props = PropertiesService.getScriptProperties();
+    return {
+      runId: props.getProperty('QBO_DAILY_EXPORT_RUN_ID') || '',
+      exportKey: props.getProperty('QBO_DAILY_EXPORT_ACTIVE_EXPORT_KEY') || '',
+      workerToken: props.getProperty('QBO_DAILY_EXPORT_ACTIVE_TOKEN') || ''
+    };
+  } catch (ignored) {
+    return { runId: '', exportKey: '', workerToken: '' };
+  }
+}
+
+
+function readExportWriteLeaseInfo_(leaseKey) {
+  const registryLock = LockService.getScriptLock();
+  const acquiredRegistry = registryLock.tryLock(
+    EXPORT_EXECUTION.WRITE_LEASE_REGISTRY_LOCK_WAIT_MS
+  );
+
+  if (!acquiredRegistry) {
+    return null;
+  }
+
+  try {
+    const raw = PropertiesService.getScriptProperties().getProperty(leaseKey);
+    if (!raw) {
+      return null;
+    }
+    try {
+      return JSON.parse(raw);
+    } catch (ignored) {
+      return null;
+    }
+  } finally {
+    registryLock.releaseLock();
+  }
+}
+
+
+function formatExportWriteLeaseOwnerForError_(owner) {
+  if (!owner) {
+    return ' Lease owner metadata was unavailable; retry this export.';
+  }
+
+  return ' Lease owner: export=' + String(owner.exportKey || '') +
+    ', sheet=' + String(owner.sheetName || '') +
+    ', runId=' + String(owner.runId || '') +
+    ', workerToken=' + String(owner.workerToken || owner.token || '') +
+    ', acquiredAt=' + String(owner.acquiredAt || '') +
+    ', expiresAt=' + String(owner.expiresAt || '') + '.';
+}
 
 /**
  * Releases only the lease owned by this execution. If the lease expired and a

@@ -20,6 +20,9 @@
  *   - Remains in Application 50 unless a later approved architecture decision assigns a narrower reusable component elsewhere.
  *
  * Change History:
+ *   - 2026-09-10: v1.5.22 governed Term contract. Corrected payment-term
+ *     business fields to read the QBO top-level properties and added
+ *     DiscountDayOfMonth.
  *   - 2026-07-21: Added standardized module documentation. No runtime behavior
  *     changed.
  * ============================================================================
@@ -60,6 +63,7 @@ const TERM_HEADERS = [
   // Date Driven Terms
   'DayOfMonthDue',
   'DueNextMonthDays',
+  'DiscountDayOfMonth',
 
   // Audit
   'CreateTime',
@@ -122,18 +126,6 @@ function buildTermRows_(terms) {
 
     const meta = extractMeta_(term);
 
-    const std = term.StandardTerm || {};
-    const dateDriven = term.DateDrivenTerm || {};
-
-    let type = '';
-
-    if (term.StandardTerm) {
-      type = 'Standard';
-    }
-    else if (term.DateDrivenTerm) {
-      type = 'DateDriven';
-    }
-
     return [
 
       // Identity
@@ -145,16 +137,17 @@ function buildTermRows_(terms) {
       valueOrBlank_(term.Name),
 
       // Type
-      type,
+      valueOrBlank_(term.Type),
 
       // Standard Terms
-      numberOrBlank_(std.DueDays),
-      numberOrBlank_(std.DiscountDays),
-      numberOrBlank_(std.DiscountPercent),
+      numberOrBlank_(term.DueDays),
+      numberOrBlank_(term.DiscountDays),
+      numberOrBlank_(term.DiscountPercent),
 
       // Date Driven Terms
-      numberOrBlank_(dateDriven.DayOfMonthDue),
-      numberOrBlank_(dateDriven.DueNextMonthDays),
+      numberOrBlank_(term.DayOfMonthDue),
+      numberOrBlank_(term.DueNextMonthDays),
+      numberOrBlank_(term.DiscountDayOfMonth),
 
       // Audit
       valueOrBlank_(meta.createTime),

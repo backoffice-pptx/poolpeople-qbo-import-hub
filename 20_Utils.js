@@ -583,3 +583,60 @@ function summarizeLinkedTransactions_(linkedTxn) {
       otherTransactions
   };
 }
+
+/**
+ * Summarizes LinkedTxn records against an entity/path-specific modeled type
+ * contract. Transactions whose TxnType is not in modeledTypes remain in the
+ * otherTransactions evidence collection.
+ *
+ * @param {*} linkedTxn QBO LinkedTxn value.
+ * @param {string[]} modeledTypes Transaction types modeled as typed columns.
+ * @return {Object} Relationship summary keyed by modeled transaction type.
+ */
+function summarizeLinkedTransactionsForTypes_(linkedTxn, modeledTypes) {
+  const linkedTransactions = normalizeArray_(linkedTxn);
+  const typeNames = normalizeArray_(modeledTypes);
+  const byType = {};
+  const otherTransactions = [];
+
+  typeNames.forEach(typeName => {
+    byType[typeName] = { count: 0, ids: [] };
+  });
+
+  linkedTransactions.forEach(transaction => {
+    const transactionId = valueOrBlank_(transaction.TxnId);
+    const transactionType = valueOrBlank_(transaction.TxnType);
+
+    if (Object.prototype.hasOwnProperty.call(byType, transactionType)) {
+      if (transactionId !== '' && !byType[transactionType].ids.includes(transactionId)) {
+        byType[transactionType].ids.push(transactionId);
+      }
+    } else {
+      otherTransactions.push(transaction);
+    }
+  });
+
+  Object.keys(byType).forEach(typeName => {
+    byType[typeName].count = byType[typeName].ids.length;
+  });
+
+  return {
+    totalCount: linkedTransactions.length,
+    byType: byType,
+    otherCount: otherTransactions.length,
+    otherTransactions: otherTransactions
+  };
+}
+
+function linkedTxnTypeCount_(summary, transactionType) {
+  return summary && summary.byType && summary.byType[transactionType]
+    ? summary.byType[transactionType].count
+    : 0;
+}
+
+function linkedTxnTypeIds_(summary, transactionType) {
+  return summary && summary.byType && summary.byType[transactionType]
+    ? summary.byType[transactionType].ids.join(', ')
+    : '';
+}
+

@@ -23,6 +23,8 @@
  *   - Remains in Application 50 unless a later approved architecture decision assigns a narrower reusable component elsewhere.
  *
  * Change History:
+ *   - 2026-09-10: v1.5.33 externalized seven governed Credit Memo top-level
+ *     business-state fields previously present only in RawJSON.
  *   - 2026-07-21: Added standardized module documentation. No runtime behavior
  *     changed.
  * ============================================================================
@@ -76,6 +78,11 @@ const CREDIT_MEMO_HEADERS = [
 
   // Billing Contact
   'BillEmail',
+  'BillEmailBccAddress',
+  'BillEmailBccJSON',
+  'BillEmailCcAddress',
+  'BillEmailCcJSON',
+  'FreeFormAddress',
 
   // Billing Address
   'BillAddrId',
@@ -101,6 +108,19 @@ const CREDIT_MEMO_HEADERS = [
   'ShipAddrPostalCode',
   'ShipAddrCountry',
 
+  // Ship From Address
+  'ShipFromAddrId',
+  'ShipFromAddrLine1',
+  'ShipFromAddrLine2',
+  'ShipFromAddrLine3',
+  'ShipFromAddrLine4',
+  'ShipFromAddrLine5',
+  'ShipFromAddrCity',
+  'ShipFromAddrState',
+  'ShipFromAddrPostalCode',
+  'ShipFromAddrCountry',
+  'ShipFromAddrJSON',
+
   // Shipping
   'TrackingNumber',
 
@@ -116,6 +136,7 @@ const CREDIT_MEMO_HEADERS = [
   'DiscountTotal',
   'TotalTax',
   'TotalAmount',
+  'Balance',
   'RemainingCredit',
   'HomeTotalAmount',
   'HomeRemainingCredit',
@@ -127,6 +148,14 @@ const CREDIT_MEMO_HEADERS = [
   'TaxLineCount',
   'TaxLinesJSON',
   'TransactionTaxDetailJSON',
+  'TaxExemptionRefId',
+  'TaxExemptionRefName',
+  'TaxExemptionRefJSON',
+
+  // Recurrence
+  'RecurDataRefId',
+  'RecurDataRefName',
+  'RecurDataRefJSON',
 
   // Line Summary
   'LineCount',
@@ -197,6 +226,10 @@ const CREDIT_MEMO_LINE_HEADERS = [
   // Sales Item Detail
   'ItemId',
   'ItemName',
+  'ItemAccountId',
+  'ItemAccountName',
+  'TaxClassificationId',
+  'TaxClassificationName',
   'Quantity',
   'UnitPrice',
   'RatePercent',
@@ -404,6 +437,11 @@ function buildCreditMemoRows_(creditMemos) {
 
       // Billing Contact
       nestedValue_(creditMemo, 'BillEmail.Address'),
+      nestedValue_(creditMemo, 'BillEmailBcc.Address'),
+      jsonStringifyCellSafe_(creditMemo.BillEmailBcc),
+      nestedValue_(creditMemo, 'BillEmailCc.Address'),
+      jsonStringifyCellSafe_(creditMemo.BillEmailCc),
+      booleanOrBlank_(creditMemo.FreeFormAddress),
 
       // Billing Address
       nestedValue_(creditMemo, 'BillAddr.Id'),
@@ -429,6 +467,19 @@ function buildCreditMemoRows_(creditMemos) {
       nestedValue_(creditMemo, 'ShipAddr.PostalCode'),
       nestedValue_(creditMemo, 'ShipAddr.Country'),
 
+      // Ship From Address
+      nestedValue_(creditMemo, 'ShipFromAddr.Id'),
+      nestedValue_(creditMemo, 'ShipFromAddr.Line1'),
+      nestedValue_(creditMemo, 'ShipFromAddr.Line2'),
+      nestedValue_(creditMemo, 'ShipFromAddr.Line3'),
+      nestedValue_(creditMemo, 'ShipFromAddr.Line4'),
+      nestedValue_(creditMemo, 'ShipFromAddr.Line5'),
+      nestedValue_(creditMemo, 'ShipFromAddr.City'),
+      nestedValue_(creditMemo, 'ShipFromAddr.CountrySubDivisionCode'),
+      nestedValue_(creditMemo, 'ShipFromAddr.PostalCode'),
+      nestedValue_(creditMemo, 'ShipFromAddr.Country'),
+      jsonStringifyCellSafe_(creditMemo.ShipFromAddr),
+
       // Shipping
       valueOrBlank_(creditMemo.TrackingNum),
 
@@ -444,6 +495,7 @@ function buildCreditMemoRows_(creditMemos) {
       totals.discountTotal,
       nestedNumberOrBlank_(creditMemo, 'TxnTaxDetail.TotalTax'),
       numberOrBlank_(creditMemo.TotalAmt),
+      numberOrBlank_(creditMemo.Balance),
       numberOrBlank_(creditMemo.RemainingCredit),
       numberOrBlank_(creditMemo.HomeTotalAmt),
       numberOrBlank_(creditMemo.HomeRemainingCredit),
@@ -455,6 +507,14 @@ function buildCreditMemoRows_(creditMemos) {
       taxLines.length,
       jsonStringifyCellSafe_(taxLines),
       jsonStringifyCellSafe_(creditMemo.TxnTaxDetail),
+      nestedValue_(creditMemo, 'TaxExemptionRef.value'),
+      nestedValue_(creditMemo, 'TaxExemptionRef.name'),
+      jsonStringifyCellSafe_(creditMemo.TaxExemptionRef),
+
+      // Recurrence
+      nestedValue_(creditMemo, 'RecurDataRef.value'),
+      nestedValue_(creditMemo, 'RecurDataRef.name'),
+      jsonStringifyCellSafe_(creditMemo.RecurDataRef),
 
       // Line Summary
       lines.length,
@@ -594,6 +654,10 @@ function appendCreditMemoLineRow_(
     // Sales Item Detail
     nestedValue_(detail, 'ItemRef.value'),
     nestedValue_(detail, 'ItemRef.name'),
+    nestedValue_(detail, 'ItemAccountRef.value'),
+    nestedValue_(detail, 'ItemAccountRef.name'),
+    nestedValue_(detail, 'TaxClassificationRef.value'),
+    nestedValue_(detail, 'TaxClassificationRef.name'),
     numberOrBlank_(detail.Qty),
     numberOrBlank_(detail.UnitPrice),
     numberOrBlank_(detail.RatePercent),

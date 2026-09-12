@@ -104,6 +104,19 @@ const REFUND_RECEIPT_HEADERS = [
   'ShipAddrPostalCode',
   'ShipAddrCountry',
 
+  // Ship-From Address
+  'ShipFromAddrId',
+  'ShipFromAddrLine1',
+  'ShipFromAddrLine2',
+  'ShipFromAddrLine3',
+  'ShipFromAddrLine4',
+  'ShipFromAddrLine5',
+  'ShipFromAddrCity',
+  'ShipFromAddrState',
+  'ShipFromAddrPostalCode',
+  'ShipFromAddrCountry',
+  'ShipFromAddrJSON',
+
   // Shipping
   'TrackingNumber',
 
@@ -125,6 +138,9 @@ const REFUND_RECEIPT_HEADERS = [
   'TaxLineCount',
   'TaxLinesJSON',
   'TransactionTaxDetailJSON',
+  'TaxExemptionRefId',
+  'TaxExemptionRefName',
+  'TaxExemptionRefJSON',
 
   // Delivery
   'DeliveryType',
@@ -203,6 +219,10 @@ const REFUND_RECEIPT_LINE_HEADERS = [
   // Sales Item Detail
   'ItemId',
   'ItemName',
+  'ItemAccountId',
+  'ItemAccountName',
+  'TaxClassificationId',
+  'TaxClassificationName',
   'Quantity',
   'UnitPrice',
   'RatePercent',
@@ -460,6 +480,19 @@ function buildRefundReceiptRows_(refundReceipts) {
       nestedValue_(refundReceipt, 'ShipAddr.PostalCode'),
       nestedValue_(refundReceipt, 'ShipAddr.Country'),
 
+      // Ship-From Address
+      nestedValue_(refundReceipt, 'ShipFromAddr.Id'),
+      nestedValue_(refundReceipt, 'ShipFromAddr.Line1'),
+      nestedValue_(refundReceipt, 'ShipFromAddr.Line2'),
+      nestedValue_(refundReceipt, 'ShipFromAddr.Line3'),
+      nestedValue_(refundReceipt, 'ShipFromAddr.Line4'),
+      nestedValue_(refundReceipt, 'ShipFromAddr.Line5'),
+      nestedValue_(refundReceipt, 'ShipFromAddr.City'),
+      nestedValue_(refundReceipt, 'ShipFromAddr.CountrySubDivisionCode'),
+      nestedValue_(refundReceipt, 'ShipFromAddr.PostalCode'),
+      nestedValue_(refundReceipt, 'ShipFromAddr.Country'),
+      jsonStringifyCellSafe_(refundReceipt.ShipFromAddr),
+
       // Shipping
       valueOrBlank_(refundReceipt.TrackingNum),
 
@@ -490,6 +523,9 @@ function buildRefundReceiptRows_(refundReceipts) {
       taxLines.length,
       jsonStringifyCellSafe_(taxLines),
       jsonStringifyCellSafe_(refundReceipt.TxnTaxDetail),
+      nestedValue_(refundReceipt, 'TaxExemptionRef.value'),
+      nestedValue_(refundReceipt, 'TaxExemptionRef.name'),
+      jsonStringifyCellSafe_(refundReceipt.TaxExemptionRef),
 
       // Delivery
       valueOrBlank_(deliveryInfo.DeliveryType),
@@ -649,6 +685,10 @@ function appendRefundReceiptLineRow_(
     // Sales Item Detail
     nestedValue_(detail, 'ItemRef.value'),
     nestedValue_(detail, 'ItemRef.name'),
+    nestedValue_(detail, 'ItemAccountRef.value'),
+    nestedValue_(detail, 'ItemAccountRef.name'),
+    nestedValue_(detail, 'TaxClassificationRef.value'),
+    nestedValue_(detail, 'TaxClassificationRef.name'),
     numberOrBlank_(detail.Qty),
     numberOrBlank_(detail.UnitPrice),
     numberOrBlank_(detail.RatePercent),

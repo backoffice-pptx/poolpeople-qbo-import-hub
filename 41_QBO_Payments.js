@@ -26,7 +26,7 @@
  *   - upsertSheet_()
  *   - writeRows_()
  *   - normalizeArray_()
- *   - summarizeLinkedTransactions_()
+ *   - summarizeLinkedTransactionsForTypes_()
  *   - extractMeta_()
  *   - numberOrBlank_()
  *   - valueOrBlank_()
@@ -95,32 +95,8 @@ const PAYMENT_HEADERS = [
   // Linked Transactions
   'LinkedTransactionCount',
 
-  'LinkedInvoiceCount',
-  'LinkedInvoiceIds',
-
-  'LinkedPaymentCount',
-  'LinkedPaymentIds',
-
-  'LinkedSalesReceiptCount',
-  'LinkedSalesReceiptIds',
-
-  'LinkedEstimateCount',
-  'LinkedEstimateIds',
-
-  'LinkedCreditMemoCount',
-  'LinkedCreditMemoIds',
-
   'LinkedDepositCount',
   'LinkedDepositIds',
-
-  'LinkedBillCount',
-  'LinkedBillIds',
-
-  'LinkedJournalEntryCount',
-  'LinkedJournalEntryIds',
-
-  'LinkedPurchaseCount',
-  'LinkedPurchaseIds',
 
   'LinkedOtherTransactionCount',
   'LinkedOtherTransactionsJSON',
@@ -137,6 +113,9 @@ const PAYMENT_HEADERS = [
   'PrivateNote',
 
   // Payment Classification
+  // PaymentExtendedType / TxnSource are direct QBO source evidence.
+  // IsPrepayment is the canonical derived classification signal.
+  // IsEstimateDeposit is legacy derived evidence only; non-canonical.
   'PaymentExtendedType',
   'TxnSource',
   'IsPrepayment',
@@ -268,10 +247,6 @@ function exportQboPayments() {
       ) + 1]: 300,
 
       [PAYMENT_HEADERS.indexOf(
-        'LinkedInvoiceIds'
-      ) + 1]: 180,
-
-      [PAYMENT_HEADERS.indexOf(
         'LinkedDepositIds'
       ) + 1]: 180,
 
@@ -397,14 +372,18 @@ function buildPaymentRows_(payments) {
     const applicationCount =
       countPaymentApplications_(lines);
 
+    // Parent-level Payment.LinkedTxn only. Line-level applications are
+    // preserved separately in QBO_PaymentApplications and must not be
+    // inferred from these parent-summary columns.
     const linkedTransactions =
       normalizeArray_(
         payment.LinkedTxn
       );
 
     const linkedTransactionSummary =
-      summarizeLinkedTransactions_(
-        linkedTransactions
+      summarizeLinkedTransactionsForTypes_(
+        linkedTransactions,
+        ['Deposit']
       );
 
     const totalAmount =
@@ -449,13 +428,25 @@ function buildPaymentRows_(payments) {
         : {};
 
     /*
-     * QBO estimate deposits observed so far have:
+     * Canonical Payment classification contract:
      *
-     * - PaymentExtendedType = Prepayment
-     * - TxnSource = INTUITMASPAYMENT
-     * - no payment application lines
-     * - TotalAmt equal to UnappliedAmt
-     * - parent LinkedTxn with TxnType = Deposit
+     * - PaymentExtendedType is direct QBO source evidence.
+     * - IsPrepayment is the primary normal classification signal and is
+     *   derived only from PaymentExtendedType === 'Prepayment'.
+     * - IsEstimateDeposit is NOT a direct QBO source field in the current
+     *   observed payloads and MUST NOT drive canonical classification.
+     *
+     * IsEstimateDeposit is retained as a legacy derived evidence signal for
+     * backward compatibility and anomaly review. The historical heuristic
+     * below intentionally remains unchanged so prior observations stay
+     * comparable. Known 2025 Trudy Denny / Bruce Farmer records that satisfy
+     * this heuristic are exception/test cases and must not be used to infer
+     * ordinary estimate-deposit behavior.
+     *
+     * A confirmed 2026 estimate-deposit workflow showed a QBO Payment with
+     * PaymentExtendedType='Prepayment', TxnSource='INTUITMASPAYMENT', no Line
+     * applications, and no parent LinkedTxn. Therefore absence of this legacy
+     * heuristic does not mean a Payment is not an estimate deposit.
      */
     const isEstimateDeposit =
       isPrepayment &&
@@ -467,7 +458,7 @@ function buildPaymentRows_(payments) {
         Number(totalAmount) -
         Number(unappliedAmount)
       ) < 0.005 &&
-      linkedTransactionSummary.depositCount > 0;
+      linkedTxnTypeCount_(linkedTransactionSummary, 'Deposit') > 0;
 
     return [
 
@@ -560,45 +551,13 @@ function buildPaymentRows_(payments) {
         payment.HomeTotalAmt
       ),
 
-      // Linked Transactions
+      // Linked Transactions: direct parent Payment.LinkedTxn only.
       linkedTransactionSummary.totalCount,
-
-      linkedTransactionSummary.invoiceCount,
-      linkedTransactionSummary.invoiceIds,
-
-      linkedTransactionSummary.paymentCount,
-      linkedTransactionSummary.paymentIds,
-
-      linkedTransactionSummary.salesReceiptCount,
-      linkedTransactionSummary.salesReceiptIds,
-
-      linkedTransactionSummary.estimateCount,
-      linkedTransactionSummary.estimateIds,
-
-      linkedTransactionSummary.creditMemoCount,
-      linkedTransactionSummary.creditMemoIds,
-
-      linkedTransactionSummary.depositCount,
-      linkedTransactionSummary.depositIds,
-
-      linkedTransactionSummary.billCount,
-      linkedTransactionSummary.billIds,
-
-      linkedTransactionSummary.journalEntryCount,
-      linkedTransactionSummary.journalEntryIds,
-
-      linkedTransactionSummary.purchaseCount,
-      linkedTransactionSummary.purchaseIds,
-
+      linkedTxnTypeCount_(linkedTransactionSummary, 'Deposit'),
+      linkedTxnTypeIds_(linkedTransactionSummary, 'Deposit'),
       linkedTransactionSummary.otherCount,
-
-      jsonStringifyCellSafe_(
-        linkedTransactionSummary.otherTransactions
-      ),
-
-      jsonStringifyCellSafe_(
-        linkedTransactions
-      ),
+      jsonStringifyCellSafe_(linkedTransactionSummary.otherTransactions),
+      jsonStringifyCellSafe_(linkedTransactions),
 
       // Processing
       booleanOrBlank_(
@@ -755,6 +714,7 @@ function buildPaymentApplicationRows_(payments) {
               line.Id
             ),
 
+            // QBO LineNum when present; otherwise a derived 1-based ordinal.
             getPaymentLineNumber_(
               line,
               lineIndex
@@ -765,6 +725,8 @@ function buildPaymentApplicationRows_(payments) {
             ),
 
             // Linked Transaction
+            // Derived 1-based ordinal within this Payment line; QBO does not
+            // currently populate a separate linked-transaction sequence.
             linkedIndex + 1,
 
             valueOrBlank_(

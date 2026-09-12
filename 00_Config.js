@@ -181,7 +181,8 @@ const EXPORT_EXECUTION = Object.freeze({
 const DAILY_EXPORT_SCHEDULE = Object.freeze({
   START_HOUR: 0,
   START_MINUTE: 15,
-  NEXT_EXPORT_DELAY_MS: 2 * 60 * 1000
+  NEXT_EXPORT_DELAY_MS: 2 * 60 * 1000,
+  WORKER_STALE_MS: 12 * 60 * 1000
 });
 
 /**

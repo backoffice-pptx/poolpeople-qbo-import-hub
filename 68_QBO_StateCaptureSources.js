@@ -858,6 +858,22 @@ function initializeQboStateCaptureWorkbook_(spreadsheet) {
     QBO_STATE_CAPTURE_HEADERS.RUN_LOG
   );
 
+  const canonicalControlSheet = ensureQboStateCaptureSheet_(
+    spreadsheet,
+    QBO_STATE_CAPTURE.SHEETS.CANONICAL_CONTROL,
+    QBO_STATE_CAPTURE_HEADERS.CONTROL
+  );
+  ensureQboStateCaptureSheet_(spreadsheet, QBO_STATE_CAPTURE.SHEETS.CDC_RUN_MANIFEST, QBO_STATE_CAPTURE_HEADERS.CDC_RUN_MANIFEST);
+  ensureQboStateCaptureSheet_(spreadsheet, QBO_STATE_CAPTURE.SHEETS.NATIVE_CDC_EVENTS, QBO_STATE_CAPTURE_HEADERS.NATIVE_CDC_EVENTS);
+  ensureQboStateCaptureSheet_(spreadsheet, QBO_STATE_CAPTURE.SHEETS.WEBHOOK_EVENTS, QBO_STATE_CAPTURE_HEADERS.WEBHOOK_EVENTS);
+  ensureQboStateCaptureSheet_(spreadsheet, QBO_STATE_CAPTURE.SHEETS.SNAPSHOTS, QBO_STATE_CAPTURE_HEADERS.SNAPSHOTS);
+  ensureQboStateCaptureSheet_(spreadsheet, QBO_STATE_CAPTURE.SHEETS.CHANGES, QBO_STATE_CAPTURE_HEADERS.CHANGES);
+  ensureQboStateCaptureSheet_(spreadsheet, QBO_STATE_CAPTURE.SHEETS.CHANGE_DETAIL, QBO_STATE_CAPTURE_HEADERS.CHANGE_DETAIL);
+  ensureQboStateCaptureSheet_(spreadsheet, QBO_STATE_CAPTURE.SHEETS.INGESTION_LOG, QBO_STATE_CAPTURE_HEADERS.INGESTION_LOG);
+  ensureQboStateCaptureSheet_(spreadsheet, QBO_STATE_CAPTURE.SHEETS.CONTRACT_AUDIT_PATHS, QBO_STATE_CAPTURE_HEADERS.CONTRACT_AUDIT_PATHS);
+  ensureQboStateCaptureSheet_(spreadsheet, QBO_STATE_CAPTURE.SHEETS.CONTRACT_AUDIT_SOURCES, QBO_STATE_CAPTURE_HEADERS.CONTRACT_AUDIT_SOURCES);
+  ensureQboStateCaptureSheet_(spreadsheet, QBO_STATE_CAPTURE.SHEETS.CONTRACT_AUDIT_RUNS, QBO_STATE_CAPTURE_HEADERS.CONTRACT_AUDIT_RUNS);
+
   const controlValues = [
     ['SchemaVersion', QBO_STATE_CAPTURE.VERSION],
     ['WorkbookRole', 'CANONICAL_QBO_STATE_CAPTURE'],
@@ -872,6 +888,33 @@ function initializeQboStateCaptureWorkbook_(spreadsheet) {
   ];
 
   upsertQboStateCaptureControlValues_(controlSheet, controlValues);
+
+  const canonicalControlValues = [
+    ['SchemaVersion', QBO_STATE_CAPTURE.VERSION],
+    ['WorkbookRole', 'CANONICAL_QBO_STATE_CAPTURE'],
+    ['CanonicalizationVersion', QBO_STATE_CAPTURE.CANONICALIZATION_VERSION],
+    ['SnapshotRecordVersion', QBO_STATE_CAPTURE.SNAPSHOT_RECORD_VERSION],
+    ['ChangeRecordVersion', QBO_STATE_CAPTURE.CHANGE_RECORD_VERSION],
+    ['ChangeDetailVersion', QBO_STATE_CAPTURE.CHANGE_DETAIL_VERSION],
+    ['RawPayloadHashAlgorithm', 'SHA-256'],
+    ['CanonicalStateHashAlgorithm', 'SHA-256'],
+    ['TechnicalMetadataIncludedInCanonicalState', 'FALSE'],
+    ['CanonicalTechnicalExclusions', 'SyncToken;MetaData;CreateTime;LastUpdatedTime;domain;sparse;technical address Id;reference display name'],
+    ['InitialStateBehavior', 'SNAPSHOT_ONLY_NO_ADD_CHANGE'],
+    ['NewEntityBehavior', 'SNAPSHOT_PLUS_ADD_CHANGE'],
+    ['StateChangedBehavior', 'SNAPSHOT_PLUS_UPDATE_CHANGE_PLUS_DETAIL'],
+    ['UnchangedStateBehavior', 'NO_SNAPSHOT_NO_CHANGE'],
+    ['DeletionBehavior', 'ONLY_GOVERNED_DELETION_SIGNAL_NOT_ABSENCE'],
+    ['ReappearanceBehavior', 'SNAPSHOT_PLUS_REAPPEAR_CHANGE'],
+    ['FullExportSourceIdContract', 'FULL_EXPORT|<RunId>|<ExportKey>'],
+    ['LegacyFullExportSourceIdContract', 'FULL_EXPORT_LEGACY|<MasterBackupFileId>|<ExportKey>'],
+    ['ArrayCanonicalizationPolicy', 'PATH_SPECIFIC_SEMANTIC_IDENTITY'],
+    ['RawPayloadStoragePolicy', 'NEW_ACQUISITIONS_REQUIRE_COMPLETE_IMMUTABLE_RAW_EVIDENCE_SET'],
+    ['LegacyStateCaptureTable', QBO_STATE_CAPTURE.SHEETS.STATES],
+    ['LegacyStateWriteEnabled', String(QBO_STATE_CAPTURE.LEGACY_STATE_WRITE_ENABLED).toUpperCase()],
+    ['ControlledMigrationScope', QBO_STATE_CAPTURE.CANONICAL_MIGRATION_SCOPE.join(';')]
+  ];
+  upsertQboStateCaptureControlValues_(canonicalControlSheet, canonicalControlValues);
 
   spreadsheet.getSheets().forEach(function(sheet) {
     applyQboStateCaptureSheetLayout_(sheet);
@@ -995,7 +1038,10 @@ function validateQboStateCaptureWorkbookStructure_(spreadsheet) {
     [QBO_STATE_CAPTURE.SHEETS.CONTROL, QBO_STATE_CAPTURE_HEADERS.CONTROL],
     [QBO_STATE_CAPTURE.SHEETS.SOURCES, QBO_STATE_CAPTURE_HEADERS.SOURCES],
     [QBO_STATE_CAPTURE.SHEETS.STATES, QBO_STATE_CAPTURE_HEADERS.STATES],
-    [QBO_STATE_CAPTURE.SHEETS.RUN_LOG, QBO_STATE_CAPTURE_HEADERS.RUN_LOG]
+    [QBO_STATE_CAPTURE.SHEETS.RUN_LOG, QBO_STATE_CAPTURE_HEADERS.RUN_LOG],
+    [QBO_STATE_CAPTURE.SHEETS.CONTRACT_AUDIT_PATHS, QBO_STATE_CAPTURE_HEADERS.CONTRACT_AUDIT_PATHS],
+    [QBO_STATE_CAPTURE.SHEETS.CONTRACT_AUDIT_SOURCES, QBO_STATE_CAPTURE_HEADERS.CONTRACT_AUDIT_SOURCES],
+    [QBO_STATE_CAPTURE.SHEETS.CONTRACT_AUDIT_RUNS, QBO_STATE_CAPTURE_HEADERS.CONTRACT_AUDIT_RUNS]
   ];
 
   definitions.forEach(function(definition) {

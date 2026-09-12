@@ -31,6 +31,8 @@
  * Change History:
  *   - 2026-07-21: Added standardized module documentation. No runtime behavior
  *     changed.
+ *   - 2026-09-10: Added governed Customer business-state fields IsProject and
+ *     ResaleNum to the flattened export contract.
  * ============================================================================
  */
 
@@ -122,6 +124,7 @@ function exportQboCustomers() {
     'ParentId',
     'ParentName',
     'Level',
+    'IsProject',
 
     'CustomerTypeId',
     'CustomerTypeName',
@@ -139,6 +142,7 @@ function exportQboCustomers() {
     'TaxExemptionReasonName',
     'PrimaryTaxIdentifier',
     'SecondaryTaxIdentifier',
+    'ResaleNum',
 
     'CurrencyId',
     'CurrencyName',
@@ -240,6 +244,7 @@ function exportQboCustomers() {
       nestedValue_(customer, 'ParentRef.value'),
       nestedValue_(customer, 'ParentRef.name'),
       numberOrBlank_(customer.Level),
+      booleanOrBlank_(customer.IsProject),
 
       nestedValue_(customer, 'CustomerTypeRef.value'),
       nestedValue_(customer, 'CustomerTypeRef.name'),
@@ -257,6 +262,7 @@ function exportQboCustomers() {
       nestedValue_(customer, 'TaxExemptionReasonRef.name'),
       valueOrBlank_(customer.PrimaryTaxIdentifier),
       valueOrBlank_(customer.SecondaryTaxIdentifier),
+      valueOrBlank_(customer.ResaleNum),
 
       nestedValue_(customer, 'CurrencyRef.value'),
       nestedValue_(customer, 'CurrencyRef.name'),

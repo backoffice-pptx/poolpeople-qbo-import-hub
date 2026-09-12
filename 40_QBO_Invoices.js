@@ -24,6 +24,7 @@
  *   - Remains in Application 50 unless a later approved architecture decision assigns a narrower reusable component elsewhere.
  *
  * Change History:
+ *   - 2026-09-10: v1.5.31 governed Invoice contract externalizes 15 previously omitted QBO top-level business-state fields.
  *   - 2026-08-27: Added parent/line row-build performance diagnostics for timeout analysis. No export schema changed.
  *   - 2026-07-21: Added standardized module documentation. No runtime behavior
  *     changed.
@@ -83,6 +84,10 @@ const INVOICE_HEADERS = [
 
   // Billing Contact
   'BillEmail',
+  'BillEmailBccAddress',
+  'BillEmailBccJSON',
+  'BillEmailCcAddress',
+  'BillEmailCcJSON',
 
   // Billing Address
   'BillAddrId',
@@ -108,18 +113,51 @@ const INVOICE_HEADERS = [
   'ShipAddrPostalCode',
   'ShipAddrCountry',
 
+  // Ship-From Address
+  'ShipFromAddrId',
+  'ShipFromAddrLine1',
+  'ShipFromAddrLine2',
+  'ShipFromAddrLine3',
+  'ShipFromAddrLine4',
+  'ShipFromAddrLine5',
+  'ShipFromAddrCity',
+  'ShipFromAddrState',
+  'ShipFromAddrPostalCode',
+  'ShipFromAddrCountry',
+  'ShipFromAddrJSON',
+
   // Shipping
   'TrackingNumber',
+  'ShipMethodId',
+  'ShipMethodName',
+  'ShipMethodRefJSON',
+  'FreeFormAddress',
 
   // Status
   'PrintStatus',
   'EmailStatus',
+  'EInvoiceStatus',
 
   // Online Payment Options
   'AllowOnlineACHPayment',
   'AllowOnlineCreditCardPayment',
   'AllowIPNPayment',
   'AllowOnlinePayment',
+  'AllowOnlineAffirmPayment',
+  'AllowOnlinePayPalPayment',
+
+  // Payment / Scheduled-Payment State
+  'PaymentMethodId',
+  'PaymentMethodName',
+  'PaymentMethodRefJSON',
+  'PaymentRefNum',
+  'ScheduledPaymentId',
+  'CreditCardPaymentJSON',
+
+  // Recurring Transaction State
+  'RecurDataRefId',
+  'RecurDataRefName',
+  'RecurDataRefJSON',
 
   // Amounts
   'Subtotal',
@@ -135,32 +173,14 @@ const INVOICE_HEADERS = [
   // Linked Transactions
   'LinkedTransactionCount',
 
-  'LinkedInvoiceCount',
-  'LinkedInvoiceIds',
-
   'LinkedPaymentCount',
   'LinkedPaymentIds',
-
-  'LinkedSalesReceiptCount',
-  'LinkedSalesReceiptIds',
 
   'LinkedEstimateCount',
   'LinkedEstimateIds',
 
-  'LinkedCreditMemoCount',
-  'LinkedCreditMemoIds',
-
-  'LinkedDepositCount',
-  'LinkedDepositIds',
-
-  'LinkedBillCount',
-  'LinkedBillIds',
-
-  'LinkedJournalEntryCount',
-  'LinkedJournalEntryIds',
-
-  'LinkedPurchaseCount',
-  'LinkedPurchaseIds',
+  'LinkedReimburseChargeCount',
+  'LinkedReimburseChargeIds',
 
   'LinkedOtherTransactionCount',
   'LinkedOtherTransactionsJSON',
@@ -174,6 +194,9 @@ const INVOICE_HEADERS = [
   'TaxLinesJSON',
   'TransactionTaxDetailJSON',
   'ApplyTaxAfterDiscount',
+  'TaxExemptionRefId',
+  'TaxExemptionRefName',
+  'TaxExemptionRefJSON',
 
   // Delivery
   'DeliveryType',
@@ -185,6 +208,13 @@ const INVOICE_HEADERS = [
 
   // Notes
   'PrivateNote',
+
+  // Approval Workflow
+  'TxnApprovalStatus',
+  'TxnApprovalStatusDetail',
+  'TxnApprovalLastChangedByUser',
+  'TxnApprovalLastChangedDate',
+  'TxnApprovalInfoJSON',
 
   // Related Data
   'CustomFieldsJSON',
@@ -225,6 +255,10 @@ const INVOICE_LINE_HEADERS = [
   // Sales Item Detail
   'ItemId',
   'ItemName',
+  'ItemAccountId',
+  'ItemAccountName',
+  'TaxClassificationId',
+  'TaxClassificationName',
   'Quantity',
   'UnitPrice',
   'RatePercent',
@@ -251,32 +285,11 @@ const INVOICE_LINE_HEADERS = [
   // Linked Transactions
   'LinkedTransactionCount',
 
-  'LinkedInvoiceCount',
-  'LinkedInvoiceIds',
-
-  'LinkedPaymentCount',
-  'LinkedPaymentIds',
-
-  'LinkedSalesReceiptCount',
-  'LinkedSalesReceiptIds',
-
   'LinkedEstimateCount',
   'LinkedEstimateIds',
 
-  'LinkedCreditMemoCount',
-  'LinkedCreditMemoIds',
-
-  'LinkedDepositCount',
-  'LinkedDepositIds',
-
-  'LinkedBillCount',
-  'LinkedBillIds',
-
-  'LinkedJournalEntryCount',
-  'LinkedJournalEntryIds',
-
-  'LinkedPurchaseCount',
-  'LinkedPurchaseIds',
+  'LinkedReimburseChargeCount',
+  'LinkedReimburseChargeIds',
 
   'LinkedOtherTransactionCount',
   'LinkedOtherTransactionsJSON',
@@ -337,15 +350,9 @@ function exportQboInvoices() {
     [INVOICE_HEADERS.indexOf('ShipAddrLine3') + 1]: 220,
     [INVOICE_HEADERS.indexOf('ShipAddrLine4') + 1]: 220,
     [INVOICE_HEADERS.indexOf('ShipAddrLine5') + 1]: 220,
-    [INVOICE_HEADERS.indexOf('LinkedInvoiceIds') + 1]: 180,
     [INVOICE_HEADERS.indexOf('LinkedPaymentIds') + 1]: 180,
-    [INVOICE_HEADERS.indexOf('LinkedSalesReceiptIds') + 1]: 180,
     [INVOICE_HEADERS.indexOf('LinkedEstimateIds') + 1]: 180,
-    [INVOICE_HEADERS.indexOf('LinkedCreditMemoIds') + 1]: 180,
-    [INVOICE_HEADERS.indexOf('LinkedDepositIds') + 1]: 180,
-    [INVOICE_HEADERS.indexOf('LinkedBillIds') + 1]: 180,
-    [INVOICE_HEADERS.indexOf('LinkedJournalEntryIds') + 1]: 180,
-    [INVOICE_HEADERS.indexOf('LinkedPurchaseIds') + 1]: 180,
+    [INVOICE_HEADERS.indexOf('LinkedReimburseChargeIds') + 1]: 180,
     [INVOICE_HEADERS.indexOf('LinkedOtherTransactionsJSON') + 1]: 300,
     [INVOICE_HEADERS.indexOf('LinkedTransactionsJSON') + 1]: 300,
     [INVOICE_HEADERS.indexOf('TaxLinesJSON') + 1]: 300,
@@ -415,8 +422,9 @@ function buildInvoiceRows_(invoices) {
       normalizeArray_(invoice.LinkedTxn);
 
     const linked =
-      summarizeLinkedTransactions_(
-        linkedTransactions
+      summarizeLinkedTransactionsForTypes_(
+        linkedTransactions,
+        ['Payment', 'Estimate', 'ReimburseCharge']
       );
 
     const taxLines =
@@ -465,6 +473,10 @@ function buildInvoiceRows_(invoices) {
 
       // Billing Contact
       nestedValue_(invoice, 'BillEmail.Address'),
+      nestedValue_(invoice, 'BillEmailBcc.Address'),
+      jsonStringifyCellSafe_(invoice.BillEmailBcc),
+      nestedValue_(invoice, 'BillEmailCc.Address'),
+      jsonStringifyCellSafe_(invoice.BillEmailCc),
 
       // Billing Address
       nestedValue_(invoice, 'BillAddr.Id'),
@@ -490,18 +502,51 @@ function buildInvoiceRows_(invoices) {
       nestedValue_(invoice, 'ShipAddr.PostalCode'),
       nestedValue_(invoice, 'ShipAddr.Country'),
 
+      // Ship-From Address
+      nestedValue_(invoice, 'ShipFromAddr.Id'),
+      nestedValue_(invoice, 'ShipFromAddr.Line1'),
+      nestedValue_(invoice, 'ShipFromAddr.Line2'),
+      nestedValue_(invoice, 'ShipFromAddr.Line3'),
+      nestedValue_(invoice, 'ShipFromAddr.Line4'),
+      nestedValue_(invoice, 'ShipFromAddr.Line5'),
+      nestedValue_(invoice, 'ShipFromAddr.City'),
+      nestedValue_(invoice, 'ShipFromAddr.CountrySubDivisionCode'),
+      nestedValue_(invoice, 'ShipFromAddr.PostalCode'),
+      nestedValue_(invoice, 'ShipFromAddr.Country'),
+      jsonStringifyCellSafe_(invoice.ShipFromAddr),
+
       // Shipping
       valueOrBlank_(invoice.TrackingNum),
+      nestedValue_(invoice, 'ShipMethodRef.value'),
+      nestedValue_(invoice, 'ShipMethodRef.name'),
+      jsonStringifyCellSafe_(invoice.ShipMethodRef),
+      booleanOrBlank_(invoice.FreeFormAddress),
 
       // Status
       valueOrBlank_(invoice.PrintStatus),
       valueOrBlank_(invoice.EmailStatus),
+      valueOrBlank_(invoice.EInvoiceStatus),
 
       // Online Payment Options
       booleanOrBlank_(invoice.AllowOnlineACHPayment),
       booleanOrBlank_(invoice.AllowOnlineCreditCardPayment),
       booleanOrBlank_(invoice.AllowIPNPayment),
       booleanOrBlank_(invoice.AllowOnlinePayment),
+      booleanOrBlank_(invoice.AllowOnlineAffirmPayment),
+      booleanOrBlank_(invoice.AllowOnlinePayPalPayment),
+
+      // Payment / Scheduled-Payment State
+      nestedValue_(invoice, 'PaymentMethodRef.value'),
+      nestedValue_(invoice, 'PaymentMethodRef.name'),
+      jsonStringifyCellSafe_(invoice.PaymentMethodRef),
+      valueOrBlank_(invoice.PaymentRefNum),
+      valueOrBlank_(invoice.ScheduledPaymentId),
+      jsonStringifyCellSafe_(invoice.CreditCardPayment),
+
+      // Recurring Transaction State
+      nestedValue_(invoice, 'RecurDataRef.value'),
+      nestedValue_(invoice, 'RecurDataRef.name'),
+      jsonStringifyCellSafe_(invoice.RecurDataRef),
 
       // Amounts
       totals.subtotal,
@@ -525,44 +570,16 @@ function buildInvoiceRows_(invoices) {
       ),
 
       // Linked Transactions
-      linked.totalCount,
-
-      linked.invoiceCount,
-      linked.invoiceIds,
-
-      linked.paymentCount,
-      linked.paymentIds,
-
-      linked.salesReceiptCount,
-      linked.salesReceiptIds,
-
-      linked.estimateCount,
-      linked.estimateIds,
-
-      linked.creditMemoCount,
-      linked.creditMemoIds,
-
-      linked.depositCount,
-      linked.depositIds,
-
-      linked.billCount,
-      linked.billIds,
-
-      linked.journalEntryCount,
-      linked.journalEntryIds,
-
-      linked.purchaseCount,
-      linked.purchaseIds,
-
+            linked.totalCount,
+      linkedTxnTypeCount_(linked, 'Payment'),
+      linkedTxnTypeIds_(linked, 'Payment'),
+      linkedTxnTypeCount_(linked, 'Estimate'),
+      linkedTxnTypeIds_(linked, 'Estimate'),
+      linkedTxnTypeCount_(linked, 'ReimburseCharge'),
+      linkedTxnTypeIds_(linked, 'ReimburseCharge'),
       linked.otherCount,
-
-      jsonStringifyCellSafe_(
-        linked.otherTransactions
-      ),
-
-      jsonStringifyCellSafe_(
-        linkedTransactions
-      ),
+      jsonStringifyCellSafe_(linked.otherTransactions),
+      jsonStringifyCellSafe_(linkedTransactions),
 
       // Tax
       nestedValue_(
@@ -593,6 +610,9 @@ function buildInvoiceRows_(invoices) {
       booleanOrBlank_(
         invoice.ApplyTaxAfterDiscount
       ),
+      nestedValue_(invoice, 'TaxExemptionRef.value'),
+      nestedValue_(invoice, 'TaxExemptionRef.name'),
+      jsonStringifyCellSafe_(invoice.TaxExemptionRef),
 
       // Delivery
       valueOrBlank_(
@@ -614,6 +634,13 @@ function buildInvoiceRows_(invoices) {
       valueOrBlank_(
         invoice.PrivateNote
       ),
+
+      // Approval Workflow
+      nestedValue_(invoice, 'TxnApprovalInfo.ApprovalStatus'),
+      nestedValue_(invoice, 'TxnApprovalInfo.ApprovalStatusDetail'),
+      nestedValue_(invoice, 'TxnApprovalInfo.LastChangedByUser'),
+      nestedValue_(invoice, 'TxnApprovalInfo.LastChangedDate'),
+      jsonStringifyCellSafe_(invoice.TxnApprovalInfo),
 
       // Related Data
       jsonStringifyCellSafe_(
@@ -694,9 +721,10 @@ function appendInvoiceLineRow_(
     normalizeArray_(line.LinkedTxn);
 
   const linked =
-    summarizeLinkedTransactions_(
-      linkedTransactions
-    );
+    summarizeLinkedTransactionsForTypes_(
+        linkedTransactions,
+        ['Estimate', 'ReimburseCharge']
+      );
 
   const detailType =
     valueOrBlank_(line.DetailType);
@@ -740,6 +768,10 @@ function appendInvoiceLineRow_(
     // Sales Item Detail
     nestedValue_(detail, 'ItemRef.value'),
     nestedValue_(detail, 'ItemRef.name'),
+    nestedValue_(detail, 'ItemAccountRef.value'),
+    nestedValue_(detail, 'ItemAccountRef.name'),
+    nestedValue_(detail, 'TaxClassificationRef.value'),
+    nestedValue_(detail, 'TaxClassificationRef.name'),
     numberOrBlank_(detail.Qty),
     numberOrBlank_(detail.UnitPrice),
     numberOrBlank_(detail.RatePercent),
@@ -764,44 +796,14 @@ function appendInvoiceLineRow_(
     groupLines.length,
 
     // Linked Transactions
-    linked.totalCount,
-
-    linked.invoiceCount,
-    linked.invoiceIds,
-
-    linked.paymentCount,
-    linked.paymentIds,
-
-    linked.salesReceiptCount,
-    linked.salesReceiptIds,
-
-    linked.estimateCount,
-    linked.estimateIds,
-
-    linked.creditMemoCount,
-    linked.creditMemoIds,
-
-    linked.depositCount,
-    linked.depositIds,
-
-    linked.billCount,
-    linked.billIds,
-
-    linked.journalEntryCount,
-    linked.journalEntryIds,
-
-    linked.purchaseCount,
-    linked.purchaseIds,
-
+        linked.totalCount,
+    linkedTxnTypeCount_(linked, 'Estimate'),
+    linkedTxnTypeIds_(linked, 'Estimate'),
+    linkedTxnTypeCount_(linked, 'ReimburseCharge'),
+    linkedTxnTypeIds_(linked, 'ReimburseCharge'),
     linked.otherCount,
-
-    jsonStringifyCellSafe_(
-      linked.otherTransactions
-    ),
-
-    jsonStringifyCellSafe_(
-      linkedTransactions
-    ),
+    jsonStringifyCellSafe_(linked.otherTransactions),
+    jsonStringifyCellSafe_(linkedTransactions),
 
     // Source
     jsonStringifyCellSafe_(

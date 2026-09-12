@@ -15,6 +15,7 @@
  *     durable state decisions used after such a termination.
  *
  * Change History:
+ *   - 2026-09-12: Added scheduler lease-retry and stale-worker regression cases.
  *   - 2026-09-03: Added Objective 19 failure-path regression suite.
  * ============================================================================
  */
@@ -28,7 +29,11 @@ function testQboFailurePathRegression() {
     testQboRegression_InterruptionCanUpdateMatchingRunningStatus_,
     testQboRegression_InterruptionPreservesNewerCompleteStatus_,
     testQboRegression_InterruptionPreservesDifferentRunStatus_,
-    testQboRegression_InterruptionPreservesDifferentAttempt_
+    testQboRegression_InterruptionPreservesDifferentAttempt_,
+    testQboRegression_WriteLeaseBusyIsRetryable_,
+    testQboRegression_GenericErrorIsTerminal_,
+    testQboRegression_ActiveWorkerNotStaleBeforeThreshold_,
+    testQboRegression_ActiveWorkerStaleAtThreshold_
   ];
 
   const failures = [];
@@ -216,6 +221,51 @@ function testQboRegression_InterruptionPreservesDifferentAttempt_() {
   );
 }
 
+
+function testQboRegression_WriteLeaseBusyIsRetryable_() {
+  const error = new Error('lease busy');
+  error.code = 'QBO_WRITE_LEASE_BUSY';
+  assertQboRegressionEqual_(
+    isRetryableQboSchedulerError_(error),
+    true,
+    'write lease busy retryability'
+  );
+}
+
+
+function testQboRegression_GenericErrorIsTerminal_() {
+  assertQboRegressionEqual_(
+    isRetryableQboSchedulerError_(new Error('generic failure')),
+    false,
+    'generic error retryability'
+  );
+}
+
+
+function testQboRegression_ActiveWorkerNotStaleBeforeThreshold_() {
+  const now = 1000000;
+  const activeState = {
+    startedAtMs: now - DAILY_EXPORT_SCHEDULE.WORKER_STALE_MS + 1
+  };
+  assertQboRegressionEqual_(
+    isDailyQboWorkerStateStaleAt_(activeState, now),
+    false,
+    'worker before stale threshold'
+  );
+}
+
+
+function testQboRegression_ActiveWorkerStaleAtThreshold_() {
+  const now = 1000000;
+  const activeState = {
+    startedAtMs: now - DAILY_EXPORT_SCHEDULE.WORKER_STALE_MS
+  };
+  assertQboRegressionEqual_(
+    isDailyQboWorkerStateStaleAt_(activeState, now),
+    true,
+    'worker at stale threshold'
+  );
+}
 
 function qboRegressionExportRow_(runId, key, status) {
   return [

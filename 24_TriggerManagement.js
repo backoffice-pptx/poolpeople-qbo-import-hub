@@ -1,3 +1,17 @@
+
+
+/**
+ * Returns the coordination lock used exclusively by the daily FULL_EXPORT
+ * scheduler. App 50 contains other independent pipelines (Native CDC, State
+ * Capture, GL backfill, audits) that intentionally use ScriptLock for their
+ * own execution domains. Using UserLock here prevents those long-running
+ * project-wide locks from starving daily-scheduler control operations while
+ * still serializing the installable-trigger chain and manual controls executed
+ * by the trigger owner.
+ */
+function getDailyQboSchedulerLock_() {
+  return LockService.getUserLock();
+}
 /** ============================================================================
  * Application : 50 QBO Import Hub
  * Module      : 24_TriggerManagement.js
@@ -7,6 +21,7 @@
  * Public API:
  *   - installDailyQboExportTriggers()
  *   - listQboExportTriggers()
+ *   - diagnoseQboExportSchedulerState()
  *   - removeDailyQboExportTriggers()
  *   - startDailyQboExportSchedule()
  *   - resumeQboExportSchedule()
@@ -26,6 +41,8 @@
  *     records that execution as failed.
  *
  * Change History:
+ *   - 2026-09-12: Added read-only scheduler runtime-state diagnostic for
+ *     queue/worker claim inspection without acquiring ScriptLock.
  *   - 2026-09-03: Replaced the scheduled-export switch with one executable
  *     registry and added one-to-one manifest/schedule/registry validation.
  *   - 2026-09-02: Added persistent scheduled-run history/status recording for
@@ -73,7 +90,11 @@ const DAILY_QBO_QUEUE_PROPERTIES = Object.freeze({
   INDEX: 'QBO_DAILY_EXPORT_QUEUE_INDEX',
   RUN_ID: 'QBO_DAILY_EXPORT_RUN_ID',
   STARTED_AT: 'QBO_DAILY_EXPORT_STARTED_AT',
-  FAILED_COUNT: 'QBO_DAILY_EXPORT_FAILED_COUNT'
+  FAILED_COUNT: 'QBO_DAILY_EXPORT_FAILED_COUNT',
+  ACTIVE_TOKEN: 'QBO_DAILY_EXPORT_ACTIVE_TOKEN',
+  ACTIVE_INDEX: 'QBO_DAILY_EXPORT_ACTIVE_INDEX',
+  ACTIVE_EXPORT_KEY: 'QBO_DAILY_EXPORT_ACTIVE_EXPORT_KEY',
+  ACTIVE_STARTED_AT: 'QBO_DAILY_EXPORT_ACTIVE_STARTED_AT'
 });
 
 
@@ -168,12 +189,66 @@ function listQboExportTriggers() {
   );
 }
 
+
+/**
+ * Read-only scheduler diagnostic.
+ *
+ * Intentionally does not acquire ScriptLock so it can inspect persisted worker
+ * claim state even while another scheduler execution currently owns that lock.
+ * This function never mutates queue state, worker state, triggers, or history.
+ */
+function diagnoseQboExportSchedulerState() {
+  const props = PropertiesService.getScriptProperties();
+  const nowMs = Date.now();
+  const activeState = getActiveDailyQboWorkerState_(props);
+
+  const runId = props.getProperty(DAILY_QBO_QUEUE_PROPERTIES.RUN_ID) || '';
+  const queueIndexValue = props.getProperty(DAILY_QBO_QUEUE_PROPERTIES.INDEX);
+  const queueIndex = queueIndexValue === null || queueIndexValue === ''
+    ? ''
+    : Number(queueIndexValue);
+
+  const activeAgeMs = activeState && activeState.startedAtMs
+    ? Math.max(0, nowMs - activeState.startedAtMs)
+    : '';
+  const stale = activeState
+    ? isDailyQboWorkerStateStaleAt_(activeState, nowMs)
+    : false;
+
+  console.log(
+    '[SCHEDULE DIAGNOSTIC] | STATE' +
+    ' | runId=' + runId +
+    ' | queueIndex=' + queueIndex +
+    ' | activeToken=' + (activeState ? activeState.token : '') +
+    ' | activeIndex=' + (activeState ? activeState.index : '') +
+    ' | activeExportKey=' + (activeState ? activeState.exportKey : '') +
+    ' | activeStartedAt=' + (activeState ? activeState.startedAt : '') +
+    ' | activeAgeMs=' + activeAgeMs +
+    ' | stale=' + stale +
+    ' | staleThresholdMs=' + DAILY_EXPORT_SCHEDULE.WORKER_STALE_MS +
+    ' | timezone=' + Session.getScriptTimeZone()
+  );
+
+  return {
+    runId: runId,
+    queueIndex: queueIndex,
+    activeToken: activeState ? activeState.token : '',
+    activeIndex: activeState ? activeState.index : '',
+    activeExportKey: activeState ? activeState.exportKey : '',
+    activeStartedAt: activeState ? activeState.startedAt : '',
+    activeAgeMs: activeAgeMs,
+    stale: stale,
+    staleThresholdMs: DAILY_EXPORT_SCHEDULE.WORKER_STALE_MS,
+    timezone: Session.getScriptTimeZone()
+  };
+}
+
 /**
  * Removes the durable daily starter and any transient queue trigger, then
  * clears queue state. Other project triggers are left untouched.
  */
 function removeDailyQboExportTriggers() {
-  const lock = LockService.getScriptLock();
+  const lock = getDailyQboSchedulerLock_();
   lock.waitLock(30000);
 
   try {
@@ -198,42 +273,164 @@ function startDailyQboExportSchedule() {
   // daily run or launch any exporter.
   validateQboExportPreflight_();
 
-  const lock = LockService.getScriptLock();
-  lock.waitLock(30000);
+  // Phase 1: capture current queue identity under a short ScriptLock. Avoid
+  // Sheet/run-history work while the project-wide lock is held.
+  const initialLock = getDailyQboSchedulerLock_();
+  initialLock.waitLock(30000);
 
+  let existingRunId;
+  let existingIndex;
+  let existingActiveState;
   try {
     deleteManagedNextQboTriggers_();
-
     const props = PropertiesService.getScriptProperties();
-    closeStaleDailyQboRunHistory_(props, 'REPLACED');
+    existingRunId = props.getProperty(DAILY_QBO_QUEUE_PROPERTIES.RUN_ID) || '';
+    existingIndex = props.getProperty(DAILY_QBO_QUEUE_PROPERTIES.INDEX);
+    existingActiveState = getActiveDailyQboWorkerState_(props);
+  } finally {
+    initialLock.releaseLock();
+  }
 
-    const runId = Utilities.getUuid();
-    const startedAt = new Date().toISOString();
+  if (existingRunId && existingIndex !== null) {
+    if (existingActiveState && !isDailyQboWorkerStateStale_(existingActiveState)) {
+      console.log(
+        '[SCHEDULE] | STARTER PRESERVE ACTIVE RUN | runId=' + existingRunId +
+        ' | export=' + (existingActiveState.exportKey || '') +
+        ' | activeAgeMs=' + (Date.now() - existingActiveState.startedAtMs)
+      );
+      scheduleNextQboExportTrigger_();
+      return;
+    }
 
-    // Run-history initialization is a required start control. If it fails,
-    // queue state is not created and no exporter is launched.
-    recordQboScheduledRunStart_(
-      runId,
-      startedAt,
-      DAILY_QBO_EXPORT_ORDER.length
+    // Slow durable-history recovery is outside ScriptLock.
+    const interruptedAt = new Date();
+    const interruptedExportCount = recordQboScheduledRunningExportsInterrupted_(
+      existingRunId,
+      interruptedAt,
+      'RESUME',
+      'Daily starter recovered an unfinished scheduled run instead of replacing it.'
     );
+    const resumeState = getQboScheduledRunResumeState_(existingRunId);
+
+    if (resumeState.resumeIndex < DAILY_QBO_EXPORT_ORDER.length) {
+      const resumeKey = DAILY_QBO_EXPORT_ORDER[resumeState.resumeIndex];
+      const commitLock = getDailyQboSchedulerLock_();
+      commitLock.waitLock(30000);
+      try {
+        const props = PropertiesService.getScriptProperties();
+        const currentRunId = props.getProperty(DAILY_QBO_QUEUE_PROPERTIES.RUN_ID) || '';
+        const currentIndex = props.getProperty(DAILY_QBO_QUEUE_PROPERTIES.INDEX);
+        const activeState = getActiveDailyQboWorkerState_(props);
+
+        if (currentRunId !== existingRunId || String(currentIndex) !== String(existingIndex)) {
+          throw new Error(
+            'Daily starter aborted recovery because scheduler queue state changed during ' +
+            'history reconstruction.'
+          );
+        }
+        if (activeState && !isDailyQboWorkerStateStale_(activeState)) {
+          throw new Error(
+            'Daily starter aborted recovery because another scheduler worker became active.'
+          );
+        }
+
+        props.setProperty(
+          DAILY_QBO_QUEUE_PROPERTIES.INDEX,
+          String(resumeState.resumeIndex)
+        );
+        props.setProperty(
+          DAILY_QBO_QUEUE_PROPERTIES.STARTED_AT,
+          resumeState.startedAt
+        );
+        props.setProperty(
+          DAILY_QBO_QUEUE_PROPERTIES.FAILED_COUNT,
+          String(resumeState.failedCount)
+        );
+        clearActiveDailyQboWorkerState_(props);
+      } finally {
+        commitLock.releaseLock();
+      }
+
+      recordQboScheduledRunResumed_(
+        existingRunId,
+        resumeState.completedCount,
+        resumeState.failedCount,
+        resumeState.resumeIndex + 1,
+        resumeKey
+      );
+
+      console.log(
+        '[SCHEDULE] | STARTER RESUME | runId=' + existingRunId +
+        ' | position=' + (resumeState.resumeIndex + 1) + '/' +
+        DAILY_QBO_EXPORT_ORDER.length +
+        ' | export=' + resumeKey +
+        ' | interrupted=' + interruptedExportCount
+      );
+      scheduleNextQboExportTrigger_();
+      return;
+    }
+
+    // History says the prior run is fully complete. Close it outside ScriptLock;
+    // there is no live non-stale worker and the transient trigger was removed.
+    completeDailyQboExportSchedule_(existingRunId, resumeState.failedCount);
+  }
+
+  const runId = Utilities.getUuid();
+  const startedAt = new Date().toISOString();
+
+  // Atomically create queue state first; if durable history creation fails,
+  // rollback only if this run still owns the queue and no worker claimed it.
+  const createLock = getDailyQboSchedulerLock_();
+  createLock.waitLock(30000);
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const currentRunId = props.getProperty(DAILY_QBO_QUEUE_PROPERTIES.RUN_ID);
+    const currentIndex = props.getProperty(DAILY_QBO_QUEUE_PROPERTIES.INDEX);
+    if (currentRunId && currentIndex !== null) {
+      throw new Error(
+        'Daily starter cannot create a new run because another scheduler run is active: ' +
+        currentRunId + '.'
+      );
+    }
 
     props.setProperty(DAILY_QBO_QUEUE_PROPERTIES.INDEX, '0');
     props.setProperty(DAILY_QBO_QUEUE_PROPERTIES.RUN_ID, runId);
     props.setProperty(DAILY_QBO_QUEUE_PROPERTIES.STARTED_AT, startedAt);
     props.setProperty(DAILY_QBO_QUEUE_PROPERTIES.FAILED_COUNT, '0');
-
-    console.log(
-      '[SCHEDULE] | START | runId=' + runId +
-      ' | exports=' + DAILY_QBO_EXPORT_ORDER.length
-    );
-
-    scheduleNextQboExportTrigger_();
+    clearActiveDailyQboWorkerState_(props);
   } finally {
-    lock.releaseLock();
+    createLock.releaseLock();
   }
-}
 
+  try {
+    recordQboScheduledRunStart_(
+      runId,
+      startedAt,
+      DAILY_QBO_EXPORT_ORDER.length
+    );
+  } catch (err) {
+    const rollbackLock = getDailyQboSchedulerLock_();
+    rollbackLock.waitLock(30000);
+    try {
+      const props = PropertiesService.getScriptProperties();
+      const currentRunId = props.getProperty(DAILY_QBO_QUEUE_PROPERTIES.RUN_ID);
+      const activeState = getActiveDailyQboWorkerState_(props);
+      if (currentRunId === runId && !activeState) {
+        clearDailyQboQueueState_();
+      }
+    } finally {
+      rollbackLock.releaseLock();
+    }
+    throw err;
+  }
+
+  console.log(
+    '[SCHEDULE] | START | runId=' + runId +
+    ' | exports=' + DAILY_QBO_EXPORT_ORDER.length
+  );
+
+  scheduleNextQboExportTrigger_();
+}
 
 /**
  * Resumes the current stranded run, or the latest resumable historical run,
@@ -246,63 +443,94 @@ function startDailyQboExportSchedule() {
 function resumeQboExportSchedule() {
   validateQboExportPreflight_();
 
-  const lock = LockService.getScriptLock();
-  lock.waitLock(30000);
+  // Phase 1: stop the transient chain and capture the queue identity while
+  // holding ScriptLock only for scheduler state / trigger mutation.
+  const initialLock = getDailyQboSchedulerLock_();
+  initialLock.waitLock(30000);
 
+  let expectedRunId;
+  let expectedIndex;
   try {
     deleteManagedNextQboTriggers_();
-
     const props = PropertiesService.getScriptProperties();
-    let runId = props.getProperty(DAILY_QBO_QUEUE_PROPERTIES.RUN_ID);
-    let resumeState;
+    expectedRunId = props.getProperty(DAILY_QBO_QUEUE_PROPERTIES.RUN_ID) || '';
+    expectedIndex = props.getProperty(DAILY_QBO_QUEUE_PROPERTIES.INDEX);
+  } finally {
+    initialLock.releaseLock();
+  }
 
-    if (runId) {
-      resumeState = getQboScheduledRunResumeState_(runId);
-    } else {
-      resumeState = getLatestQboScheduledRunResumeState_();
-      if (!resumeState || !resumeState.runId) {
+  // History reconstruction can touch Sheets and must never hold ScriptLock.
+  let runId = expectedRunId;
+  let resumeState;
+
+  if (runId) {
+    resumeState = getQboScheduledRunResumeState_(runId);
+  } else {
+    resumeState = getLatestQboScheduledRunResumeState_();
+    if (!resumeState || !resumeState.runId) {
+      throw new Error(
+        'No resumable QBO export run was found. Start a new run with ' +
+        'startDailyQboExportSchedule().'
+      );
+    }
+    runId = resumeState.runId;
+  }
+
+  const interruptedAt = new Date();
+  const interruptedExportCount = recordQboScheduledRunningExportsInterrupted_(
+    runId,
+    interruptedAt,
+    'INTERRUPTED',
+    'Execution terminated unexpectedly before exporter completed normally.'
+  );
+
+  if (interruptedExportCount > 0) {
+    console.log(
+      '[RUN HISTORY] | EXPORT INTERRUPTED | runId=' + runId +
+      ' | count=' + interruptedExportCount +
+      ' | parentStatus=RESUME'
+    );
+    resumeState = getQboScheduledRunResumeState_(runId);
+  }
+
+  if (resumeState.resumeIndex >= DAILY_QBO_EXPORT_ORDER.length) {
+    throw new Error(
+      'Run ' + runId + ' has no incomplete exporters to resume.'
+    );
+  }
+
+  const resumeKey = DAILY_QBO_EXPORT_ORDER[resumeState.resumeIndex];
+
+  // Phase 2: compare-and-set queue state. If another execution changed the
+  // queue while history was being reconstructed, fail rather than overwrite it.
+  const commitLock = getDailyQboSchedulerLock_();
+  commitLock.waitLock(30000);
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const currentRunId = props.getProperty(DAILY_QBO_QUEUE_PROPERTIES.RUN_ID) || '';
+    const currentIndex = props.getProperty(DAILY_QBO_QUEUE_PROPERTIES.INDEX);
+    const activeState = getActiveDailyQboWorkerState_(props);
+
+    if (activeState && !isDailyQboWorkerStateStale_(activeState)) {
+      throw new Error(
+        'Cannot resume run ' + runId + ': another scheduler worker is active for ' +
+        (activeState.exportKey || 'unknown export') + '.'
+      );
+    }
+
+    if (expectedRunId) {
+      if (currentRunId !== expectedRunId || String(currentIndex) !== String(expectedIndex)) {
         throw new Error(
-          'No resumable QBO export run was found. Start a new run with ' +
-          'startDailyQboExportSchedule().'
+          'Cannot resume run ' + runId + ': scheduler queue state changed while ' +
+          'resume history was being reconstructed.'
         );
       }
-      runId = resumeState.runId;
-    }
-
-    // A platform-level Apps Script termination can leave the active exporter
-    // attempt recorded as RUNNING because its catch/finally never executes.
-    // Before retrying, close any such attempt as INTERRUPTED so history never
-    // implies that an old execution is still active.
-    const interruptedAt = new Date();
-    const interruptedExportCount = recordQboScheduledRunningExportsInterrupted_(
-      runId,
-      interruptedAt,
-      'INTERRUPTED',
-      'Execution terminated unexpectedly before exporter completed normally.'
-    );
-
-    if (interruptedExportCount > 0) {
-      console.log(
-        '[RUN HISTORY] | EXPORT INTERRUPTED | runId=' + runId +
-        ' | count=' + interruptedExportCount +
-        ' | parentStatus=RESUME'
-      );
-
-      // Reconstruct state after closing the stranded attempt so the retry
-      // decision is based on durable, non-RUNNING history.
-      resumeState = getQboScheduledRunResumeState_(runId);
-    }
-
-    if (resumeState.resumeIndex >= DAILY_QBO_EXPORT_ORDER.length) {
+    } else if (currentRunId && currentRunId !== runId) {
       throw new Error(
-        'Run ' + runId + ' has no incomplete exporters to resume.'
+        'Cannot resume historical run ' + runId + ': another scheduler run is now active.'
       );
     }
 
-    const resumeKey = DAILY_QBO_EXPORT_ORDER[resumeState.resumeIndex];
-
-    // Restore queue state before re-opening history so the scheduler and
-    // durable status describe the same logical run.
     props.setProperty(
       DAILY_QBO_QUEUE_PROPERTIES.INDEX,
       String(resumeState.resumeIndex)
@@ -316,28 +544,30 @@ function resumeQboExportSchedule() {
       DAILY_QBO_QUEUE_PROPERTIES.FAILED_COUNT,
       String(resumeState.failedCount)
     );
-
-    recordQboScheduledRunResumed_(
-      runId,
-      resumeState.completedCount,
-      resumeState.failedCount,
-      resumeState.resumeIndex + 1,
-      resumeKey
-    );
-
-    console.log(
-      '[SCHEDULE] | RESUME | runId=' + runId +
-      ' | position=' + (resumeState.resumeIndex + 1) + '/' +
-      DAILY_QBO_EXPORT_ORDER.length +
-      ' | export=' + resumeKey +
-      ' | completed=' + resumeState.completedCount +
-      ' | failed=' + resumeState.failedCount
-    );
-
-    scheduleNextQboExportTrigger_();
+    clearActiveDailyQboWorkerState_(props);
   } finally {
-    lock.releaseLock();
+    commitLock.releaseLock();
   }
+
+  // Durable status and trigger creation are intentionally outside ScriptLock.
+  recordQboScheduledRunResumed_(
+    runId,
+    resumeState.completedCount,
+    resumeState.failedCount,
+    resumeState.resumeIndex + 1,
+    resumeKey
+  );
+
+  console.log(
+    '[SCHEDULE] | RESUME | runId=' + runId +
+    ' | position=' + (resumeState.resumeIndex + 1) + '/' +
+    DAILY_QBO_EXPORT_ORDER.length +
+    ' | export=' + resumeKey +
+    ' | completed=' + resumeState.completedCount +
+    ' | failed=' + resumeState.failedCount
+  );
+
+  scheduleNextQboExportTrigger_();
 }
 
 /**
@@ -347,43 +577,43 @@ function resumeQboExportSchedule() {
 function runNextScheduledQboExport() {
   validateDailyQboExportSchedule_();
 
-  const props = PropertiesService.getScriptProperties();
-  const runId = props.getProperty(DAILY_QBO_QUEUE_PROPERTIES.RUN_ID);
-  const indexValue = props.getProperty(DAILY_QBO_QUEUE_PROPERTIES.INDEX);
-  const failedCountValue = props.getProperty(DAILY_QBO_QUEUE_PROPERTIES.FAILED_COUNT) || '0';
-
-  if (!runId || indexValue === null) {
-    throw new Error(
-      'Daily QBO export queue is not initialized. Run startDailyQboExportSchedule().' 
-    );
-  }
-
-  const index = Number(indexValue);
-  if (!Number.isInteger(index) || index < 0) {
-    throw new Error('Invalid daily QBO export queue index: ' + indexValue + '.');
-  }
-
-  let failedCount = Number(failedCountValue);
-  if (!Number.isInteger(failedCount) || failedCount < 0) {
-    failedCount = 0;
-  }
-
-  if (index >= DAILY_QBO_EXPORT_ORDER.length) {
-    completeDailyQboExportSchedule_(runId, failedCount);
+  const claim = claimDailyQboWorker_();
+  if (!claim) {
     return;
   }
 
-  const exportKey = DAILY_QBO_EXPORT_ORDER[index];
-  const entry = getQboExportManifestEntry_(exportKey);
-  if (!entry) {
-    throw new Error('Daily schedule references unknown export key: ' + exportKey + '.');
+  const runId = claim.runId;
+
+  if (claim.completeOnly) {
+    completeDailyQboExportSchedule_(runId, claim.failedCount);
+    return;
+  }
+
+  const index = claim.index;
+  const exportKey = claim.exportKey;
+  const entry = claim.entry;
+  let failedCount = claim.failedCount;
+
+  if (claim.recoveredStaleWorker) {
+    const interruptedCount = recordQboScheduledRunningExportsInterrupted_(
+      runId,
+      new Date(),
+      'RECOVERED',
+      'Scheduler watchdog recovered a stale worker claim after no normal completion.'
+    );
+    console.warn(
+      '[SCHEDULE] | STALE WORKER RECOVERED | runId=' + runId +
+      ' | export=' + exportKey +
+      ' | interrupted=' + interruptedCount
+    );
   }
 
   console.log(
     '[SCHEDULE] | EXPORT START | runId=' + runId +
     ' | position=' + (index + 1) + '/' + DAILY_QBO_EXPORT_ORDER.length +
     ' | export=' + exportKey +
-    ' | function=' + entry.exportFunctionName
+    ' | function=' + entry.exportFunctionName +
+    ' | workerToken=' + claim.token
   );
 
   const exportStartedAt = new Date();
@@ -399,6 +629,7 @@ function runNextScheduledQboExport() {
   }, 'export start', runId, exportKey);
 
   let exportError = null;
+  let retryableError = false;
   let masterBackupMetadata = null;
 
   try {
@@ -428,58 +659,276 @@ function runNextScheduledQboExport() {
       );
     }, 'export complete', runId, exportKey);
 
-    // State Capture registration is downstream of the durable COMPLETE
-    // run-history write. The helper re-reads that exact row and is deliberately
-    // non-throwing so State Capture cannot retroactively fail a successful QBO
-    // export. If run-history persistence failed, registration will also refuse
-    // to proceed because no authoritative COMPLETE source exists yet.
     safeRegisterQboCompletedFullExportSource_(runId, exportKey);
   } catch (err) {
     exportError = err;
-    failedCount += 1;
-    props.setProperty(
-      DAILY_QBO_QUEUE_PROPERTIES.FAILED_COUNT,
-      String(failedCount)
-    );
-    console.error(
-      '[SCHEDULE] | EXPORT ERROR | runId=' + runId +
-      ' | export=' + exportKey +
-      ' | error=' + (err && err.message ? err.message : err)
-    );
-    safeRecordQboRunHistory_(function() {
-      recordQboScheduledExportResult_(
-        runId,
-        entry,
-        new Date(),
-        'ERROR',
-        Date.now() - exportStartedAt.getTime(),
-        err && err.message ? err.message : String(err)
-      );
-    }, 'export error', runId, exportKey);
-  } finally {
-    const nextIndex = index + 1;
-    props.setProperty(DAILY_QBO_QUEUE_PROPERTIES.INDEX, String(nextIndex));
+    retryableError = isRetryableQboSchedulerError_(err);
 
-    safeRecordQboRunHistory_(function() {
-      recordQboScheduledRunProgress_(
-        runId,
-        nextIndex - failedCount,
-        failedCount,
-        nextIndex,
-        ''
+    if (retryableError) {
+      console.warn(
+        '[SCHEDULE] | EXPORT RETRY | runId=' + runId +
+        ' | export=' + exportKey +
+        ' | code=' + String(err && err.code || '') +
+        ' | error=' + (err && err.message ? err.message : err)
       );
-    }, 'run progress', runId, exportKey);
-
-    if (nextIndex < DAILY_QBO_EXPORT_ORDER.length) {
-      scheduleNextQboExportTrigger_();
+      safeRecordQboRunHistory_(function() {
+        recordQboScheduledExportResult_(
+          runId,
+          entry,
+          new Date(),
+          'INTERRUPTED',
+          Date.now() - exportStartedAt.getTime(),
+          'Retryable scheduler condition: ' +
+            (err && err.message ? err.message : String(err))
+        );
+      }, 'export retry', runId, exportKey);
     } else {
-      completeDailyQboExportSchedule_(runId, failedCount);
+      failedCount += 1;
+      console.error(
+        '[SCHEDULE] | EXPORT ERROR | runId=' + runId +
+        ' | export=' + exportKey +
+        ' | error=' + (err && err.message ? err.message : err)
+      );
+      safeRecordQboRunHistory_(function() {
+        recordQboScheduledExportResult_(
+          runId,
+          entry,
+          new Date(),
+          'ERROR',
+          Date.now() - exportStartedAt.getTime(),
+          err && err.message ? err.message : String(err)
+        );
+      }, 'export error', runId, exportKey);
     }
   }
 
-  if (exportError) {
+  const finalization = finalizeDailyQboWorkerClaim_(
+    claim,
+    failedCount,
+    retryableError
+  );
+
+  if (finalization.claimLost) {
+    console.warn(
+      '[SCHEDULE] | CLAIM LOST | runId=' + runId +
+      ' | export=' + exportKey +
+      ' | workerToken=' + claim.token +
+      ' | queueMutationSkipped=true'
+    );
+  } else if (finalization.completeRun) {
+    completeDailyQboExportSchedule_(runId, failedCount);
+  } else {
+    scheduleNextQboExportTrigger_();
+  }
+
+  if (exportError && !retryableError) {
     throw exportError;
   }
+}
+
+
+/**
+ * Atomically claims the current queue position for one Apps Script execution.
+ * A watchdog trigger is armed before the exporter starts so platform-level
+ * termination cannot sever the queue chain permanently.
+ */
+function claimDailyQboWorker_() {
+  const lock = getDailyQboSchedulerLock_();
+  lock.waitLock(30000);
+
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const runId = props.getProperty(DAILY_QBO_QUEUE_PROPERTIES.RUN_ID);
+    const indexValue = props.getProperty(DAILY_QBO_QUEUE_PROPERTIES.INDEX);
+    const failedCountValue = props.getProperty(
+      DAILY_QBO_QUEUE_PROPERTIES.FAILED_COUNT
+    ) || '0';
+
+    if (!runId || indexValue === null) {
+      console.warn('[SCHEDULE] | WORKER NOOP | reason=queue_not_initialized');
+      return null;
+    }
+
+    const index = Number(indexValue);
+    if (!Number.isInteger(index) || index < 0) {
+      throw new Error('Invalid daily QBO export queue index: ' + indexValue + '.');
+    }
+
+    let failedCount = Number(failedCountValue);
+    if (!Number.isInteger(failedCount) || failedCount < 0) {
+      failedCount = 0;
+    }
+
+    if (index >= DAILY_QBO_EXPORT_ORDER.length) {
+      clearActiveDailyQboWorkerState_(props);
+      return {
+        runId: runId,
+        index: index,
+        failedCount: failedCount,
+        completeOnly: true
+      };
+    }
+
+    const activeState = getActiveDailyQboWorkerState_(props);
+    let recoveredStaleWorker = false;
+
+    if (activeState) {
+      if (!isDailyQboWorkerStateStale_(activeState)) {
+        console.log(
+          '[SCHEDULE] | WORKER DEFER | runId=' + runId +
+          ' | activeExport=' + (activeState.exportKey || '') +
+          ' | activeAgeMs=' + (Date.now() - activeState.startedAtMs)
+        );
+        scheduleNextQboExportTrigger_();
+        return null;
+      }
+
+      recoveredStaleWorker = true;
+      console.warn(
+        '[SCHEDULE] | WORKER STALE | runId=' + runId +
+        ' | activeExport=' + (activeState.exportKey || '') +
+        ' | activeAgeMs=' + (Date.now() - activeState.startedAtMs)
+      );
+      clearActiveDailyQboWorkerState_(props);
+    }
+
+    const exportKey = DAILY_QBO_EXPORT_ORDER[index];
+    const entry = getQboExportManifestEntry_(exportKey);
+    if (!entry) {
+      throw new Error('Daily schedule references unknown export key: ' + exportKey + '.');
+    }
+
+    const token = Utilities.getUuid();
+    const startedAt = new Date().toISOString();
+
+    props.setProperty(DAILY_QBO_QUEUE_PROPERTIES.ACTIVE_TOKEN, token);
+    props.setProperty(DAILY_QBO_QUEUE_PROPERTIES.ACTIVE_INDEX, String(index));
+    props.setProperty(DAILY_QBO_QUEUE_PROPERTIES.ACTIVE_EXPORT_KEY, exportKey);
+    props.setProperty(DAILY_QBO_QUEUE_PROPERTIES.ACTIVE_STARTED_AT, startedAt);
+
+    // Arm recovery before entering long-running exporter code. A normal finish
+    // replaces this watchdog with the ordinary next-export trigger.
+    scheduleNextQboExportTrigger_();
+
+    return {
+      token: token,
+      runId: runId,
+      index: index,
+      failedCount: failedCount,
+      exportKey: exportKey,
+      entry: entry,
+      startedAt: startedAt,
+      recoveredStaleWorker: recoveredStaleWorker,
+      completeOnly: false
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+
+function finalizeDailyQboWorkerClaim_(claim, failedCount, retrySamePosition) {
+  if (claim.completeOnly) {
+    return { claimLost: false, completeRun: true };
+  }
+
+  const normalizedFailedCount = Math.max(0, Number(failedCount) || 0);
+  let nextIndex;
+
+  // ScriptLock protects only the atomic claim comparison and queue mutation.
+  // Run-history spreadsheet I/O is intentionally performed after release.
+  const lock = getDailyQboSchedulerLock_();
+  lock.waitLock(30000);
+
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const currentToken = props.getProperty(
+      DAILY_QBO_QUEUE_PROPERTIES.ACTIVE_TOKEN
+    );
+
+    if (String(currentToken || '') !== String(claim.token || '')) {
+      return { claimLost: true, completeRun: false };
+    }
+
+    props.setProperty(
+      DAILY_QBO_QUEUE_PROPERTIES.FAILED_COUNT,
+      String(normalizedFailedCount)
+    );
+
+    nextIndex = retrySamePosition ? claim.index : claim.index + 1;
+    props.setProperty(DAILY_QBO_QUEUE_PROPERTIES.INDEX, String(nextIndex));
+    clearActiveDailyQboWorkerState_(props);
+  } finally {
+    lock.releaseLock();
+  }
+
+  safeRecordQboRunHistory_(function() {
+    recordQboScheduledRunProgress_(
+      claim.runId,
+      nextIndex - normalizedFailedCount,
+      normalizedFailedCount,
+      retrySamePosition ? claim.index + 1 : nextIndex,
+      retrySamePosition ? claim.exportKey : ''
+    );
+  }, 'run progress', claim.runId, claim.exportKey);
+
+  return {
+    claimLost: false,
+    completeRun: nextIndex >= DAILY_QBO_EXPORT_ORDER.length
+  };
+}
+
+
+function getActiveDailyQboWorkerState_(props) {
+  const token = props.getProperty(DAILY_QBO_QUEUE_PROPERTIES.ACTIVE_TOKEN);
+  if (!token) {
+    return null;
+  }
+
+  const startedAt = props.getProperty(
+    DAILY_QBO_QUEUE_PROPERTIES.ACTIVE_STARTED_AT
+  );
+  const startedAtMs = Date.parse(String(startedAt || ''));
+
+  return {
+    token: token,
+    index: Number(props.getProperty(DAILY_QBO_QUEUE_PROPERTIES.ACTIVE_INDEX)),
+    exportKey: props.getProperty(
+      DAILY_QBO_QUEUE_PROPERTIES.ACTIVE_EXPORT_KEY
+    ) || '',
+    startedAt: startedAt || '',
+    startedAtMs: Number.isFinite(startedAtMs) ? startedAtMs : 0
+  };
+}
+
+
+function isDailyQboWorkerStateStale_(activeState) {
+  return isDailyQboWorkerStateStaleAt_(activeState, Date.now());
+}
+
+
+function isDailyQboWorkerStateStaleAt_(activeState, nowMs) {
+  if (!activeState || !activeState.startedAtMs) {
+    return true;
+  }
+
+  return Number(nowMs) - activeState.startedAtMs >=
+    DAILY_EXPORT_SCHEDULE.WORKER_STALE_MS;
+}
+
+
+function clearActiveDailyQboWorkerState_(props) {
+  props.deleteProperty(DAILY_QBO_QUEUE_PROPERTIES.ACTIVE_TOKEN);
+  props.deleteProperty(DAILY_QBO_QUEUE_PROPERTIES.ACTIVE_INDEX);
+  props.deleteProperty(DAILY_QBO_QUEUE_PROPERTIES.ACTIVE_EXPORT_KEY);
+  props.deleteProperty(DAILY_QBO_QUEUE_PROPERTIES.ACTIVE_STARTED_AT);
+}
+
+
+function isRetryableQboSchedulerError_(error) {
+  return Boolean(
+    error && String(error.code || '') === 'QBO_WRITE_LEASE_BUSY'
+  );
 }
 
 /**
@@ -715,6 +1164,7 @@ function clearDailyQboQueueState_() {
   props.deleteProperty(DAILY_QBO_QUEUE_PROPERTIES.RUN_ID);
   props.deleteProperty(DAILY_QBO_QUEUE_PROPERTIES.STARTED_AT);
   props.deleteProperty(DAILY_QBO_QUEUE_PROPERTIES.FAILED_COUNT);
+  clearActiveDailyQboWorkerState_(props);
 }
 
 function deleteManagedDailyQboTriggers_() {

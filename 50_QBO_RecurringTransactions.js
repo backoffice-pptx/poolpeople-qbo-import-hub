@@ -269,9 +269,9 @@ function exportQboRecurringTransactions() {
 
 function buildRecurringTransactionRows_(recurringTransactions) {
   return normalizeArray_(recurringTransactions).map(recurring => {
-    const recurringInfo = getRecurringInfo_(recurring);
-    const schedule = getRecurringScheduleInfo_(recurring);
     const transaction = getRecurringEmbeddedTransaction_(recurring);
+    const recurringInfo = getRecurringInfo_(recurring, transaction);
+    const schedule = getRecurringScheduleInfo_(recurring, transaction);
     const transactionType = detectRecurringTransactionType_(recurring, transaction);
     const isInvoice = transactionType === 'Invoice';
     const isSalesReceipt = transactionType === 'SalesReceipt';
@@ -437,8 +437,8 @@ function buildRecurringTransactionLineRows_(recurringTransactions) {
   const rows = [];
 
   normalizeArray_(recurringTransactions).forEach(recurring => {
-    const recurringInfo = getRecurringInfo_(recurring);
     const transaction = getRecurringEmbeddedTransaction_(recurring);
+    const recurringInfo = getRecurringInfo_(recurring, transaction);
     const transactionType = detectRecurringTransactionType_(recurring, transaction);
     const recurringId = firstPresentValue_([recurring.Id, transaction.Id]);
     const templateName = firstPresentValue_([
@@ -590,8 +590,14 @@ function appendRecurringLineRows_(rows, lines, context) {
   });
 }
 
-function getRecurringInfo_(recurring) {
+function getRecurringInfo_(recurring, transaction) {
+  const embeddedTransaction = transaction || getRecurringEmbeddedTransaction_(recurring);
+
   return firstPresentValue_([
+    embeddedTransaction && embeddedTransaction.RecurringInfo,
+    embeddedTransaction && embeddedTransaction.RecurData,
+    embeddedTransaction && embeddedTransaction.RecurringData,
+    embeddedTransaction && embeddedTransaction.RecurrenceInfo,
     recurring.RecurringInfo,
     recurring.RecurData,
     recurring.RecurringData,
@@ -599,14 +605,17 @@ function getRecurringInfo_(recurring) {
   ]) || {};
 }
 
-function getRecurringScheduleInfo_(recurring) {
-  const recurringInfo = getRecurringInfo_(recurring);
+function getRecurringScheduleInfo_(recurring, transaction) {
+  const embeddedTransaction = transaction || getRecurringEmbeddedTransaction_(recurring);
+  const recurringInfo = getRecurringInfo_(recurring, embeddedTransaction);
 
   return firstPresentValue_([
-    recurring.ScheduleInfo,
-    recurring.Schedule,
     recurringInfo.ScheduleInfo,
-    recurringInfo.Schedule
+    recurringInfo.Schedule,
+    embeddedTransaction && embeddedTransaction.ScheduleInfo,
+    embeddedTransaction && embeddedTransaction.Schedule,
+    recurring.ScheduleInfo,
+    recurring.Schedule
   ]) || {};
 }
 

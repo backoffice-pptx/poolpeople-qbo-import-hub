@@ -21,6 +21,10 @@
  *   - Remains in Application 50 unless a later approved architecture decision assigns a narrower reusable component elsewhere.
  *
  * Change History:
+ *   - 2026-09-10 v1.5.20: Governed Item flattened contract now preserves
+ *     ClassRef, Level, PrefVendorRef, PrintGroupedItems, and
+ *     TaxClassificationRef. Corrected PrintGroupedItems to read the QBO
+ *     top-level Item property rather than ItemGroupDetail.
  *   - 2026-07-21: Added standardized module documentation. No runtime behavior
  *     changed.
  * ============================================================================
@@ -57,6 +61,15 @@ const ITEM_HEADERS = [
   'PrintGroupedItems',
   'GroupLineCount',
   'SubItem',
+
+  // Governed Item business classification
+  'ClassId',
+  'ClassName',
+  'Level',
+  'PrefVendorId',
+  'PrefVendorName',
+  'TaxClassificationId',
+  'TaxClassificationName',
 
   // Names
   'Name',
@@ -211,10 +224,19 @@ function buildItemRows_(items) {
       isGroup ? 'Bundle' : valueOrBlank_(item.Type),
       isGroup,
       isGroup
-        ? booleanOrBlank_(groupDetail.PrintGroupedItems)
+        ? booleanOrBlank_(item.PrintGroupedItems)
         : '',
       isGroup ? groupLines.length : '',
       booleanOrBlank_(item.SubItem),
+
+      // Governed Item business classification
+      nestedValue_(item, 'ClassRef.value'),
+      nestedValue_(item, 'ClassRef.name'),
+      numberOrBlank_(item.Level),
+      nestedValue_(item, 'PrefVendorRef.value'),
+      nestedValue_(item, 'PrefVendorRef.name'),
+      nestedValue_(item, 'TaxClassificationRef.value'),
+      nestedValue_(item, 'TaxClassificationRef.name'),
 
       // Names
       valueOrBlank_(item.Name),
@@ -293,7 +315,7 @@ function buildItemGroupRows_(items) {
         index + 1,
         valueOrBlank_(itemRef.value),
         valueOrBlank_(itemRef.name),
-        valueOrBlank_(line.ItemType),
+        valueOrBlank_(itemRef.type),
         numberOrBlank_(line.Qty),
 
         // Source

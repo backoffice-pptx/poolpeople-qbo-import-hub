@@ -23,6 +23,8 @@
  *   - Remains in Application 50 unless a later approved architecture decision assigns a narrower reusable component elsewhere.
  *
  * Change History:
+ *   - 2026-09-10: v1.5.24 governed TaxCode contract externalizes the QBO
+ *     top-level Hidden business-state field.
  *   - 2026-07-21: Added standardized module documentation. No runtime behavior
  *     changed.
  * ============================================================================
@@ -51,6 +53,7 @@ const TAX_CODE_HEADERS = [
   'Id',
   'SyncToken',
   'Active',
+  'Hidden',
 
   // Tax Code
   'Name',
@@ -89,7 +92,7 @@ const TAX_CODE_RATE_HEADERS = [
   // Referenced Tax Rate
   'TaxRateId',
   'TaxRateName',
-  'TaxType',
+  'TaxTypeApplicable',
   'TaxOrder',
 
   // Source
@@ -185,6 +188,7 @@ function buildTaxCodeRows_(taxCodes) {
       valueOrBlank_(taxCode.Id),
       valueOrBlank_(taxCode.SyncToken),
       booleanOrBlank_(taxCode.Active),
+      booleanOrBlank_(taxCode.Hidden),
 
       // Tax Code
       valueOrBlank_(taxCode.Name),
@@ -275,7 +279,7 @@ function appendTaxCodeRateRows_(
       // Referenced Tax Rate
       valueOrBlank_(taxRateRef.value),
       valueOrBlank_(taxRateRef.name),
-      valueOrBlank_(rateDetail.TaxType),
+      valueOrBlank_(rateDetail.TaxTypeApplicable),
       numberOrBlank_(rateDetail.TaxOrder),
 
       // Source

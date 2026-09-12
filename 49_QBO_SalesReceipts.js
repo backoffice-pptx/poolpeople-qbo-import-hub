@@ -79,6 +79,11 @@ const SALES_RECEIPT_HEADERS = [
 
   // Billing Contact
   'BillEmail',
+  'BillEmailBccAddress',
+  'BillEmailBccJSON',
+  'BillEmailCcAddress',
+  'BillEmailCcJSON',
+  'FreeFormAddress',
 
   // Billing Address
   'BillAddrId',
@@ -104,12 +109,31 @@ const SALES_RECEIPT_HEADERS = [
   'ShipAddrPostalCode',
   'ShipAddrCountry',
 
+  // Ship-From Address
+  'ShipFromAddrId',
+  'ShipFromAddrLine1',
+  'ShipFromAddrLine2',
+  'ShipFromAddrLine3',
+  'ShipFromAddrLine4',
+  'ShipFromAddrLine5',
+  'ShipFromAddrCity',
+  'ShipFromAddrState',
+  'ShipFromAddrPostalCode',
+  'ShipFromAddrCountry',
+  'ShipFromAddrJSON',
+
   // Shipping
   'TrackingNumber',
 
   // Status
   'PrintStatus',
   'EmailStatus',
+  'TxnSource',
+
+  // Recurrence
+  'RecurDataRefId',
+  'RecurDataRefName',
+  'RecurDataRefJSON',
 
   // Amounts
   'Subtotal',
@@ -125,6 +149,9 @@ const SALES_RECEIPT_HEADERS = [
   'TaxLineCount',
   'TaxLinesJSON',
   'TransactionTaxDetailJSON',
+  'TaxExemptionRefId',
+  'TaxExemptionRefName',
+  'TaxExemptionRefJSON',
 
   // Delivery
   'DeliveryType',
@@ -145,24 +172,10 @@ const SALES_RECEIPT_HEADERS = [
 
   // Linked Transactions
   'LinkedTransactionCount',
-  'LinkedInvoiceCount',
-  'LinkedInvoiceIds',
-  'LinkedPaymentCount',
-  'LinkedPaymentIds',
-  'LinkedSalesReceiptCount',
-  'LinkedSalesReceiptIds',
-  'LinkedEstimateCount',
-  'LinkedEstimateIds',
-  'LinkedCreditMemoCount',
-  'LinkedCreditMemoIds',
+
   'LinkedDepositCount',
   'LinkedDepositIds',
-  'LinkedBillCount',
-  'LinkedBillIds',
-  'LinkedJournalEntryCount',
-  'LinkedJournalEntryIds',
-  'LinkedPurchaseCount',
-  'LinkedPurchaseIds',
+
   'LinkedOtherTransactionCount',
   'LinkedOtherTransactionsJSON',
   'LinkedTransactionsJSON',
@@ -203,6 +216,10 @@ const SALES_RECEIPT_LINE_HEADERS = [
   // Sales Item Detail
   'ItemId',
   'ItemName',
+  'ItemAccountId',
+  'ItemAccountName',
+  'TaxClassificationId',
+  'TaxClassificationName',
   'Quantity',
   'UnitPrice',
   'RatePercent',
@@ -228,24 +245,7 @@ const SALES_RECEIPT_LINE_HEADERS = [
 
   // Linked Transactions
   'LinkedTransactionCount',
-  'LinkedInvoiceCount',
-  'LinkedInvoiceIds',
-  'LinkedPaymentCount',
-  'LinkedPaymentIds',
-  'LinkedSalesReceiptCount',
-  'LinkedSalesReceiptIds',
-  'LinkedEstimateCount',
-  'LinkedEstimateIds',
-  'LinkedCreditMemoCount',
-  'LinkedCreditMemoIds',
-  'LinkedDepositCount',
-  'LinkedDepositIds',
-  'LinkedBillCount',
-  'LinkedBillIds',
-  'LinkedJournalEntryCount',
-  'LinkedJournalEntryIds',
-  'LinkedPurchaseCount',
-  'LinkedPurchaseIds',
+
   'LinkedOtherTransactionCount',
   'LinkedOtherTransactionsJSON',
   'LinkedTransactionsJSON',
@@ -396,8 +396,9 @@ function buildSalesReceiptRows_(salesReceipts) {
       normalizeArray_(salesReceipt.LinkedTxn);
 
     const linked =
-      summarizeLinkedTransactions_(
-        linkedTransactions
+      summarizeLinkedTransactionsForTypes_(
+        linkedTransactions,
+        ['Deposit']
       );
 
     return [
@@ -435,6 +436,11 @@ function buildSalesReceiptRows_(salesReceipts) {
 
       // Billing Contact
       nestedValue_(salesReceipt, 'BillEmail.Address'),
+      nestedValue_(salesReceipt, 'BillEmailBcc.Address'),
+      jsonStringifyCellSafe_(salesReceipt.BillEmailBcc),
+      nestedValue_(salesReceipt, 'BillEmailCc.Address'),
+      jsonStringifyCellSafe_(salesReceipt.BillEmailCc),
+      valueOrBlank_(salesReceipt.FreeFormAddress),
 
       // Billing Address
       nestedValue_(salesReceipt, 'BillAddr.Id'),
@@ -460,12 +466,31 @@ function buildSalesReceiptRows_(salesReceipts) {
       nestedValue_(salesReceipt, 'ShipAddr.PostalCode'),
       nestedValue_(salesReceipt, 'ShipAddr.Country'),
 
+      // Ship-From Address
+      nestedValue_(salesReceipt, 'ShipFromAddr.Id'),
+      nestedValue_(salesReceipt, 'ShipFromAddr.Line1'),
+      nestedValue_(salesReceipt, 'ShipFromAddr.Line2'),
+      nestedValue_(salesReceipt, 'ShipFromAddr.Line3'),
+      nestedValue_(salesReceipt, 'ShipFromAddr.Line4'),
+      nestedValue_(salesReceipt, 'ShipFromAddr.Line5'),
+      nestedValue_(salesReceipt, 'ShipFromAddr.City'),
+      nestedValue_(salesReceipt, 'ShipFromAddr.CountrySubDivisionCode'),
+      nestedValue_(salesReceipt, 'ShipFromAddr.PostalCode'),
+      nestedValue_(salesReceipt, 'ShipFromAddr.Country'),
+      jsonStringifyCellSafe_(salesReceipt.ShipFromAddr),
+
       // Shipping
       valueOrBlank_(salesReceipt.TrackingNum),
 
       // Status
       valueOrBlank_(salesReceipt.PrintStatus),
       valueOrBlank_(salesReceipt.EmailStatus),
+      valueOrBlank_(salesReceipt.TxnSource),
+
+      // Recurrence
+      nestedValue_(salesReceipt, 'RecurDataRef.value'),
+      nestedValue_(salesReceipt, 'RecurDataRef.name'),
+      jsonStringifyCellSafe_(salesReceipt.RecurDataRef),
 
       // Amounts
       totals.subtotal,
@@ -490,6 +515,9 @@ function buildSalesReceiptRows_(salesReceipts) {
       taxLines.length,
       jsonStringifyCellSafe_(taxLines),
       jsonStringifyCellSafe_(salesReceipt.TxnTaxDetail),
+      nestedValue_(salesReceipt, 'TaxExemptionRef.value'),
+      nestedValue_(salesReceipt, 'TaxExemptionRef.name'),
+      jsonStringifyCellSafe_(salesReceipt.TaxExemptionRef),
 
       // Delivery
       valueOrBlank_(deliveryInfo.DeliveryType),
@@ -509,25 +537,9 @@ function buildSalesReceiptRows_(salesReceipts) {
       jsonStringifyCellSafe_(salesReceipt.CustomField),
 
       // Linked Transactions
-      linked.totalCount,
-      linked.invoiceCount,
-      linked.invoiceIds,
-      linked.paymentCount,
-      linked.paymentIds,
-      linked.salesReceiptCount,
-      linked.salesReceiptIds,
-      linked.estimateCount,
-      linked.estimateIds,
-      linked.creditMemoCount,
-      linked.creditMemoIds,
-      linked.depositCount,
-      linked.depositIds,
-      linked.billCount,
-      linked.billIds,
-      linked.journalEntryCount,
-      linked.journalEntryIds,
-      linked.purchaseCount,
-      linked.purchaseIds,
+            linked.totalCount,
+      linkedTxnTypeCount_(linked, 'Deposit'),
+      linkedTxnTypeIds_(linked, 'Deposit'),
       linked.otherCount,
       jsonStringifyCellSafe_(linked.otherTransactions),
       jsonStringifyCellSafe_(linkedTransactions),
@@ -620,9 +632,10 @@ function appendSalesReceiptLineRow_(
     normalizeArray_(line.LinkedTxn);
 
   const linked =
-    summarizeLinkedTransactions_(
-      linkedTransactions
-    );
+    summarizeLinkedTransactionsForTypes_(
+        linkedTransactions,
+        []
+      );
 
   rows.push([
     // Parent Sales Receipt
@@ -649,6 +662,10 @@ function appendSalesReceiptLineRow_(
     // Sales Item Detail
     nestedValue_(detail, 'ItemRef.value'),
     nestedValue_(detail, 'ItemRef.name'),
+    nestedValue_(detail, 'ItemAccountRef.value'),
+    nestedValue_(detail, 'ItemAccountRef.name'),
+    nestedValue_(detail, 'TaxClassificationRef.value'),
+    nestedValue_(detail, 'TaxClassificationRef.name'),
     numberOrBlank_(detail.Qty),
     numberOrBlank_(detail.UnitPrice),
     numberOrBlank_(detail.RatePercent),
@@ -673,25 +690,7 @@ function appendSalesReceiptLineRow_(
     groupLines.length,
 
     // Linked Transactions
-    linked.totalCount,
-    linked.invoiceCount,
-    linked.invoiceIds,
-    linked.paymentCount,
-    linked.paymentIds,
-    linked.salesReceiptCount,
-    linked.salesReceiptIds,
-    linked.estimateCount,
-    linked.estimateIds,
-    linked.creditMemoCount,
-    linked.creditMemoIds,
-    linked.depositCount,
-    linked.depositIds,
-    linked.billCount,
-    linked.billIds,
-    linked.journalEntryCount,
-    linked.journalEntryIds,
-    linked.purchaseCount,
-    linked.purchaseIds,
+        linked.totalCount,
     linked.otherCount,
     jsonStringifyCellSafe_(linked.otherTransactions),
     jsonStringifyCellSafe_(linkedTransactions),

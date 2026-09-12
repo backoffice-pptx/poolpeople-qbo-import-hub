@@ -83,6 +83,8 @@ const VENDOR_HEADERS = [
 
   // Vendor Settings
   'Vendor1099',
+  'BillRate',
+  'CostRate',
   'TaxIdentifier',
   'AccountNumber',
   'Balance',
@@ -196,6 +198,8 @@ function buildVendorRows_(vendors) {
 
       // Vendor Settings
       booleanOrBlank_(vendor.Vendor1099),
+      numberOrBlank_(vendor.BillRate),
+      numberOrBlank_(vendor.CostRate),
       valueOrBlank_(vendor.TaxIdentifier),
       valueOrBlank_(vendor.AcctNum),
       numberOrBlank_(vendor.Balance),

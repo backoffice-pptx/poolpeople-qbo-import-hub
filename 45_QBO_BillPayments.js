@@ -114,24 +114,13 @@ const BILL_PAYMENT_HEADERS = [
 
   // Linked Transactions
   'LinkedTransactionCount',
-  'LinkedInvoiceCount',
-  'LinkedInvoiceIds',
-  'LinkedPaymentCount',
-  'LinkedPaymentIds',
-  'LinkedSalesReceiptCount',
-  'LinkedSalesReceiptIds',
-  'LinkedEstimateCount',
-  'LinkedEstimateIds',
-  'LinkedCreditMemoCount',
-  'LinkedCreditMemoIds',
-  'LinkedDepositCount',
-  'LinkedDepositIds',
+
   'LinkedBillCount',
   'LinkedBillIds',
-  'LinkedJournalEntryCount',
-  'LinkedJournalEntryIds',
-  'LinkedPurchaseCount',
-  'LinkedPurchaseIds',
+
+  'LinkedVendorCreditCount',
+  'LinkedVendorCreditIds',
+
   'LinkedOtherTransactionCount',
   'LinkedOtherTransactionsJSON',
   'LinkedTransactionsJSON',
@@ -286,7 +275,7 @@ function buildBillPaymentRows_(billPayments) {
     const lines = normalizeArray_(billPayment.Line);
     const applicationSummary = summarizeBillPaymentApplications_(lines);
     const linkedTransactions = collectBillPaymentLinkedTransactions_(lines);
-    const linked = summarizeLinkedTransactions_(linkedTransactions);
+    const linked = summarizeLinkedTransactionsForTypes_(linkedTransactions, ['Bill', 'VendorCredit']);
 
     const totalAmount = numberOrBlank_(billPayment.TotalAmt);
     const applicationLineTotal = calculateBillPaymentLineTotal_(lines);
@@ -359,25 +348,11 @@ function buildBillPaymentRows_(billPayments) {
       jsonStringifyCellSafe_(billPayment.CreditCardPayment),
 
       // Linked Transactions
-      linked.totalCount,
-      linked.invoiceCount,
-      linked.invoiceIds,
-      linked.paymentCount,
-      linked.paymentIds,
-      linked.salesReceiptCount,
-      linked.salesReceiptIds,
-      linked.estimateCount,
-      linked.estimateIds,
-      linked.creditMemoCount,
-      linked.creditMemoIds,
-      linked.depositCount,
-      linked.depositIds,
-      linked.billCount,
-      linked.billIds,
-      linked.journalEntryCount,
-      linked.journalEntryIds,
-      linked.purchaseCount,
-      linked.purchaseIds,
+            linked.totalCount,
+      linkedTxnTypeCount_(linked, 'Bill'),
+      linkedTxnTypeIds_(linked, 'Bill'),
+      linkedTxnTypeCount_(linked, 'VendorCredit'),
+      linkedTxnTypeIds_(linked, 'VendorCredit'),
       linked.otherCount,
       jsonStringifyCellSafe_(linked.otherTransactions),
       jsonStringifyCellSafe_(linkedTransactions),

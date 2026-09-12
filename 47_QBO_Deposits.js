@@ -75,27 +75,29 @@ const DEPOSIT_HEADERS = [
   'UnlinkedLineCount',
   'PrivateNote',
   'LinkedTransactionCount',
-  'LinkedInvoiceCount',
-  'LinkedInvoiceIds',
+
   'LinkedPaymentCount',
   'LinkedPaymentIds',
+
   'LinkedSalesReceiptCount',
   'LinkedSalesReceiptIds',
-  'LinkedEstimateCount',
-  'LinkedEstimateIds',
-  'LinkedCreditMemoCount',
-  'LinkedCreditMemoIds',
-  'LinkedDepositCount',
-  'LinkedDepositIds',
-  'LinkedBillCount',
-  'LinkedBillIds',
+
+  'LinkedInvoiceCount',
+  'LinkedInvoiceIds',
+
   'LinkedJournalEntryCount',
   'LinkedJournalEntryIds',
+
   'LinkedPurchaseCount',
   'LinkedPurchaseIds',
+
+  'LinkedRefundReceiptCount',
+  'LinkedRefundReceiptIds',
+
   'LinkedOtherTransactionCount',
   'LinkedOtherTransactionsJSON',
   'LinkedTransactionsJSON',
+  'TransactionTaxDetailJSON',
   'CashBackJSON',
   'CreateTime',
   'LastUpdatedTime',
@@ -128,24 +130,25 @@ const DEPOSIT_LINE_HEADERS = [
   'CheckNumber',
   'TransactionType',
   'LinkedTransactionCount',
-  'LinkedInvoiceCount',
-  'LinkedInvoiceIds',
+
   'LinkedPaymentCount',
   'LinkedPaymentIds',
+
   'LinkedSalesReceiptCount',
   'LinkedSalesReceiptIds',
-  'LinkedEstimateCount',
-  'LinkedEstimateIds',
-  'LinkedCreditMemoCount',
-  'LinkedCreditMemoIds',
-  'LinkedDepositCount',
-  'LinkedDepositIds',
-  'LinkedBillCount',
-  'LinkedBillIds',
+
+  'LinkedInvoiceCount',
+  'LinkedInvoiceIds',
+
   'LinkedJournalEntryCount',
   'LinkedJournalEntryIds',
+
   'LinkedPurchaseCount',
   'LinkedPurchaseIds',
+
+  'LinkedRefundReceiptCount',
+  'LinkedRefundReceiptIds',
+
   'LinkedOtherTransactionCount',
   'LinkedOtherTransactionsJSON',
   'LinkedTransactionsJSON',
@@ -263,7 +266,7 @@ function buildDepositRows_(deposits) {
       calculatedTotal
     );
     const linkedTransactions = collectDepositLinkedTxns_(lines);
-    const linked = summarizeLinkedTransactions_(linkedTransactions);
+    const linked = summarizeLinkedTransactionsForTypes_(linkedTransactions, ['Payment', 'SalesReceipt', 'Invoice', 'JournalEntry', 'Purchase', 'RefundReceipt']);
     const linkedLineCount = countDepositLinkedLines_(lines);
 
     return [
@@ -291,28 +294,23 @@ function buildDepositRows_(deposits) {
       linkedLineCount,
       lines.length - linkedLineCount,
       valueOrBlank_(deposit.PrivateNote),
-      linked.totalCount,
-      linked.invoiceCount,
-      linked.invoiceIds,
-      linked.paymentCount,
-      linked.paymentIds,
-      linked.salesReceiptCount,
-      linked.salesReceiptIds,
-      linked.estimateCount,
-      linked.estimateIds,
-      linked.creditMemoCount,
-      linked.creditMemoIds,
-      linked.depositCount,
-      linked.depositIds,
-      linked.billCount,
-      linked.billIds,
-      linked.journalEntryCount,
-      linked.journalEntryIds,
-      linked.purchaseCount,
-      linked.purchaseIds,
+            linked.totalCount,
+      linkedTxnTypeCount_(linked, 'Payment'),
+      linkedTxnTypeIds_(linked, 'Payment'),
+      linkedTxnTypeCount_(linked, 'SalesReceipt'),
+      linkedTxnTypeIds_(linked, 'SalesReceipt'),
+      linkedTxnTypeCount_(linked, 'Invoice'),
+      linkedTxnTypeIds_(linked, 'Invoice'),
+      linkedTxnTypeCount_(linked, 'JournalEntry'),
+      linkedTxnTypeIds_(linked, 'JournalEntry'),
+      linkedTxnTypeCount_(linked, 'Purchase'),
+      linkedTxnTypeIds_(linked, 'Purchase'),
+      linkedTxnTypeCount_(linked, 'RefundReceipt'),
+      linkedTxnTypeIds_(linked, 'RefundReceipt'),
       linked.otherCount,
       jsonStringifyCellSafe_(linked.otherTransactions),
       jsonStringifyCellSafe_(linkedTransactions),
+      jsonStringifyCellSafe_(deposit.TxnTaxDetail),
       jsonStringifyCellSafe_(deposit.CashBack),
       valueOrBlank_(meta.createTime),
       valueOrBlank_(meta.lastUpdatedTime),
@@ -354,10 +352,10 @@ function appendDepositLineRow_(rows, deposit, line, index) {
     : (line.DepositLineDetail || {});
 
   const linkedTransactions = normalizeArray_(line.LinkedTxn);
-  const linked = summarizeLinkedTransactions_(linkedTransactions);
+  const linked = summarizeLinkedTransactionsForTypes_(linkedTransactions, ['Payment', 'SalesReceipt', 'Invoice', 'JournalEntry', 'Purchase', 'RefundReceipt']);
   const hasLinkedTransaction = linkedTransactions.length > 0;
-  const isPaymentLink = linked.paymentCount > 0;
-  const isSalesReceiptLink = linked.salesReceiptCount > 0;
+  const isPaymentLink = linkedTxnTypeCount_(linked, 'Payment') > 0;
+  const isSalesReceiptLink = linkedTxnTypeCount_(linked, 'SalesReceipt') > 0;
   const isOtherLink =
     hasLinkedTransaction &&
     !isPaymentLink &&
@@ -392,25 +390,19 @@ function appendDepositLineRow_(rows, deposit, line, index) {
     nestedValue_(detail, 'PaymentMethodRef.name'),
     valueOrBlank_(detail.CheckNum),
     valueOrBlank_(detail.TxnType),
-    linked.totalCount,
-    linked.invoiceCount,
-    linked.invoiceIds,
-    linked.paymentCount,
-    linked.paymentIds,
-    linked.salesReceiptCount,
-    linked.salesReceiptIds,
-    linked.estimateCount,
-    linked.estimateIds,
-    linked.creditMemoCount,
-    linked.creditMemoIds,
-    linked.depositCount,
-    linked.depositIds,
-    linked.billCount,
-    linked.billIds,
-    linked.journalEntryCount,
-    linked.journalEntryIds,
-    linked.purchaseCount,
-    linked.purchaseIds,
+        linked.totalCount,
+    linkedTxnTypeCount_(linked, 'Payment'),
+    linkedTxnTypeIds_(linked, 'Payment'),
+    linkedTxnTypeCount_(linked, 'SalesReceipt'),
+    linkedTxnTypeIds_(linked, 'SalesReceipt'),
+    linkedTxnTypeCount_(linked, 'Invoice'),
+    linkedTxnTypeIds_(linked, 'Invoice'),
+    linkedTxnTypeCount_(linked, 'JournalEntry'),
+    linkedTxnTypeIds_(linked, 'JournalEntry'),
+    linkedTxnTypeCount_(linked, 'Purchase'),
+    linkedTxnTypeIds_(linked, 'Purchase'),
+    linkedTxnTypeCount_(linked, 'RefundReceipt'),
+    linkedTxnTypeIds_(linked, 'RefundReceipt'),
     linked.otherCount,
     jsonStringifyCellSafe_(linked.otherTransactions),
     jsonStringifyCellSafe_(linkedTransactions),
