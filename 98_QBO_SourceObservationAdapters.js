@@ -1,7 +1,7 @@
 /** ============================================================================
  * Application : 50 QBO Import Hub Standalone
  * Module      : 98_QBO_SourceObservationAdapters.js
- * Version     : 1.5.53
+ * Version     : 1.5.69
  * Purpose     : Source-specific adapters from immutable source evidence into
  *               complete Raw Entity Evidence suitable for shared normalization.
  *
@@ -235,7 +235,9 @@ function qboAdaptWebhookEntityObservation_(input) {
     });
   }
 
-  const fetched = qboSourceAdapterFetchEntity_(entityType, entityId);
+  const fetched = input.rawEntity && typeof input.rawEntity === 'object'
+    ? input.rawEntity
+    : qboSourceAdapterFetchEntity_(entityType, entityId);
   const assessment = qboSourceAdapterAssessRawEntityCompleteness_(entityType, fetched);
   if (!assessment.complete) {
     throw new Error('SOURCE_ADAPTER_RAW_ENTITY_INCOMPLETE source=WEBHOOK entity=' + entityType + '|' + entityId + ' reason=' + assessment.reason);
@@ -251,7 +253,7 @@ function qboAdaptWebhookEntityObservation_(input) {
     sourceType:'WEBHOOK', sourceObservationId:input.sourceObservationId, exportKey:qboSourceAdapterDefinition_(entityType).exportKey,
     entityType:entityType, rawEntity:fetched, observedAt:input.observedAt,
     sourceChangeTime:eventLastUpdated || fetchedLastUpdated, operation:'UPSERT', sourceEvidence:sourceEvidence,
-    rawEntityEvidence:qboSourceAdapterBuildRawEntityEvidence_({rawEntity:fetched, acquisitionType:'TARGETED_QBO_FETCH_AFTER_WEBHOOK',
+    rawEntityEvidence:qboSourceAdapterBuildRawEntityEvidence_({rawEntity:fetched, acquisitionType:String(input.rawEntityAcquisitionType || 'TARGETED_QBO_FETCH_AFTER_WEBHOOK'),
       acquiredAt:input.observedAt, complete:true, completenessReason:assessment.reason, temporalMatchStatus:temporalMatchStatus, fetchedFromQbo:true}),
     sourceReportedChange:true, historicalReconstruction:input.historicalReconstruction === true,
     reconstructionStatus:temporalMatchStatus === 'FETCH_MATCHES_SOURCE_EVENT' || temporalMatchStatus === 'SOURCE_EVENT_TIME_UNAVAILABLE'

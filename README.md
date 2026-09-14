@@ -657,3 +657,15 @@ Do not resume `auditQboHistoricalFlattenedContractCoverageNext()` until the exce
 - Forward FULL_EXPORT RawJSON is fail-closed: missing, truncated, invalid, identity-mismatched, or non-normalizable raw entity evidence blocks that source rather than manufacturing canonical state.
 - The controlled `testQboStateCaptureAutoRegistrationOnce()` path now also performs the FULL_EXPORT forward-ingestion handoff when v1.5.68 is present, allowing runtime proof of `01_Sources -> 05 -> Change Payloads` before the nightly FULL_EXPORT schedule is re-enabled.
 - State Application remains disabled. No writes to `10_Snapshot_Records`, `11_Change_Records`, or `12_Change_Detail` are enabled in this release.
+
+## v1.5.69 — Webhook forward ingestion
+
+- Adds `107_QBO_WebhookForwardIngestion.js` for post-cutover QBO Webhook receipt ingestion into the shared `05_Forward_Ingestion_Control` ledger.
+- Preserves the locked ownership boundary: Webhook evidence does **not** write to `01_Sources`; `01_Sources` remains FULL_EXPORT-specific. The governed Webhooks Drive folder is discovery/evidence storage only, while `05_Forward_Ingestion_Control` remains the authoritative processed/unprocessed/checkpoint control.
+- Adds a durable one-time forward cutover via `initializeQboWebhookForwardIngestionCutover()`. The normal forward dispatcher never sweeps pre-cutover historical receipts; those remain reserved for a separate controlled historical Webhook reconstruction/backfill.
+- Adds an independent 5-minute `dispatchQboWebhookIngestion` path with its own pipeline lease, bounded 25-event batches, 210-second runtime budget, and 30-second minimum-safe-new-work threshold.
+- Webhook receipts are fail-closed before ingestion: source marker, verified signature flag, receipt timestamp, raw-payload SHA-256, base64 payload integrity, declared event count, entity identity, supported entity type, and realm identity are validated.
+- Non-delete webhook events still require a targeted QBO fetch. To make retries deterministic, the fetched complete entity is frozen first as an immutable deterministic artifact in governed `QBO_CAPTURED_STATES_FOLDER`; a retry reuses that exact captured state before rebuilding/persisting the Change Payload.
+- `98_QBO_SourceObservationAdapters.js` now accepts an already-captured complete Webhook entity as adapter input while retaining the same completeness and temporal-match checks. If no captured entity is supplied, the adapter retains its existing targeted-fetch behavior.
+- Delete events continue to normalize as governed tombstone observations without a live fetch.
+- State Application remains disabled. This release does not write `04_Webhook_Events`, `10_Snapshot_Records`, `11_Change_Records`, or `12_Change_Detail`.
