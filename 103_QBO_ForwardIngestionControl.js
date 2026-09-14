@@ -1,7 +1,7 @@
 /** ============================================================================
  * Application : 50 QBO Import Hub Standalone
  * Module      : 103_QBO_ForwardIngestionControl.js
- * Version     : 1.5.67
+ * Version     : 1.5.70
  * Purpose     : Shared durable forward-ingestion control ledger for normalized
  *               observations from Native CDC, Webhooks, and FULL_EXPORT.
  *
@@ -17,7 +17,7 @@
  */
 
 const QBO_FORWARD_INGESTION_CONTROL_ = Object.freeze({
-  VERSION: 'QBO_FORWARD_INGESTION_CONTROL_V3',
+  VERSION: 'QBO_FORWARD_INGESTION_CONTROL_V4',
   SHEET_NAME: '05_Forward_Ingestion_Control',
   CLAIM_TIMEOUT_MS: 360000,
   LOCK_TIMEOUT_MS: 30000,
@@ -74,7 +74,8 @@ function provisionQboForwardIngestionControl() {
     registeredAtRequired: true,
     registrationTimestampImmutable: true,
     postInsertRegisteredAtVerification: true,
-    initialBlockedRegistrationSupported: true
+    initialBlockedRegistrationSupported: true,
+    claimMatcherSupported: true
   };
   console.log('[FORWARD INGESTION] | CONTROL READY | ' + JSON.stringify(result));
   return result;
@@ -275,6 +276,11 @@ function qboForwardIngestionInputField_(ledgerField) {
 }
 
 function qboForwardIngestionClaimNext_(sourceType, workerId) {
+  return qboForwardIngestionClaimNextMatching_(sourceType, workerId, null);
+}
+
+/** Claims the next row satisfying an optional side-effect-free matcher. */
+function qboForwardIngestionClaimNextMatching_(sourceType, workerId, matcher) {
   return qboForwardIngestionWithLock_(function() {
     const sheet = qboForwardIngestionEnsureSheet_();
     const rows = qboForwardIngestionReadRows_(sheet);
@@ -283,6 +289,7 @@ function qboForwardIngestionClaimNext_(sourceType, workerId) {
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
       if (sourceType && String(row.SourceType || '') !== sourceType) continue;
+      if (matcher && matcher(row) !== true) continue;
       const status = String(row.ProcessingStatus || '');
       const claimExpiryMs = row.ClaimExpiresAt ? new Date(row.ClaimExpiresAt).getTime() : 0;
       const claimStale = status === QBO_FORWARD_INGESTION_CONTROL_.STATUS_PROCESSING && claimExpiryMs && claimExpiryMs <= now;

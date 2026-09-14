@@ -245,8 +245,13 @@ function qboAdaptWebhookEntityObservation_(input) {
   const fetchedLastUpdated = String(fetched.MetaData && fetched.MetaData.LastUpdatedTime || '');
   const eventLastUpdated = String(input.sourceChangeTime || '');
   const temporalMatchStatus = qboSourceAdapterTemporalMatchStatus_(eventLastUpdated, fetchedLastUpdated);
-  if (input.historicalReconstruction === true && temporalMatchStatus === 'FETCHED_STATE_NEWER_THAN_SOURCE_EVENT') {
-    throw new Error('WEBHOOK_HISTORICAL_STATE_NOT_RECONSTRUCTIBLE entity=' + entityType + '|' + entityId + ' sourceChangeTime=' + eventLastUpdated + ' fetchedLastUpdatedTime=' + fetchedLastUpdated);
+  if (input.historicalReconstruction === true && temporalMatchStatus !== 'FETCH_MATCHES_SOURCE_EVENT') {
+    throw new Error(
+      'WEBHOOK_HISTORICAL_STATE_NOT_RECONSTRUCTIBLE entity=' + entityType + '|' + entityId +
+      ' temporalMatchStatus=' + temporalMatchStatus +
+      ' sourceChangeTime=' + eventLastUpdated +
+      ' fetchedLastUpdatedTime=' + fetchedLastUpdated
+    );
   }
 
   return qboNormalizeAndBuildChangePayload_({

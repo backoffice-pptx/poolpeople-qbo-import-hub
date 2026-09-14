@@ -669,3 +669,25 @@ Do not resume `auditQboHistoricalFlattenedContractCoverageNext()` until the exce
 - `98_QBO_SourceObservationAdapters.js` now accepts an already-captured complete Webhook entity as adapter input while retaining the same completeness and temporal-match checks. If no captured entity is supplied, the adapter retains its existing targeted-fetch behavior.
 - Delete events continue to normalize as governed tombstone observations without a live fetch.
 - State Application remains disabled. This release does not write `04_Webhook_Events`, `10_Snapshot_Records`, `11_Change_Records`, or `12_Change_Detail`.
+
+
+## v1.5.70 — Controlled historical Webhook reconstruction
+
+- Adds `108_QBO_WebhookHistoricalReconstruction.js` for one-time pre-cutover Webhook reconstruction.
+- Historical Webhook events are event-level rows in `05_Forward_Ingestion_Control` with `SourceStatus=HISTORICAL_RECONSTRUCTION`; Webhooks still do not write to `01_Sources`.
+- The live Webhook dispatcher is claim-isolated from historical rows.
+- DELETE events become tombstones without fetch. Non-delete events are frozen in `Captured States` and only produce a historical Change Payload when QBO `MetaData.LastUpdatedTime` exactly matches the Webhook event `lastUpdated`; newer/older/indeterminate states are BLOCKED instead of fabricated.
+- State Application and `04_Webhook_Events` remain disabled.
+
+Validation: `testQboWebhookHistoricalReconstructionReadiness()`, `previewQboWebhookHistoricalReconstructionBackfill()`, then `startQboWebhookHistoricalReconstructionBackfill()` and monitor with `listQboWebhookHistoricalReconstructionStatus()`.
+
+## v1.5.71 — Historical Webhook blocked-event diagnostics and exception classification
+
+- Adds read-only `listQboWebhookHistoricalBlockedDiagnostics()` to enumerate blocked `WEBHOOK` / `HISTORICAL_RECONSTRUCTION` rows from `05_Forward_Ingestion_Control`, reopen the original receipt evidence, and report the exact event identity, source realm, configured realm, source change time, evidence hash, and normalized diagnostic category.
+- The diagnostic never mutates `05`, source evidence, Captured States, Change Payloads, or the completed v1.5.70 historical run.
+- Realm-mismatch blocking now records both `sourceRealmId` and `configuredRealmId` for future events rather than a generic mismatch token.
+- Historical targeted-fetch failures are normalized into governed exception classes. QBO `code=610` / `Object Not Found` is classified as `WEBHOOK_HISTORICAL_ENTITY_UNAVAILABLE_AT_RECONSTRUCTION`; other fetch failures become `WEBHOOK_HISTORICAL_TARGETED_FETCH_FAILED`.
+- Existing completed v1.5.70 ledger outcomes are intentionally preserved. This release does not requeue, rewrite, or reprocess any of the 28 historical Webhook events.
+- State Application and `04_Webhook_Events` remain disabled.
+
+Validation: run `testQboWebhookHistoricalReconstructionReadiness()` and then `listQboWebhookHistoricalBlockedDiagnostics()`. Confirm the existing eight blocked rows partition into expected temporal mismatches, genuine realm mismatches, and explicit entity-unavailable cases with no unexplained `OTHER_BLOCK` rows.

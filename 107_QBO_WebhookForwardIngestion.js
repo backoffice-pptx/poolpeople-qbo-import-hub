@@ -1,7 +1,7 @@
 /** ============================================================================
  * Application : 50 QBO Import Hub Standalone
  * Module      : 107_QBO_WebhookForwardIngestion.js
- * Version     : 1.5.69
+ * Version     : 1.5.70
  * Purpose     : Production Webhook forward ingestion from immutable receipt
  *               evidence into shared normalized Change Payloads.
  *
@@ -23,7 +23,7 @@
  */
 
 const QBO_WEBHOOK_FORWARD_INGESTION_ = Object.freeze({
-  VERSION: 'QBO_WEBHOOK_FORWARD_INGESTION_V1',
+  VERSION: 'QBO_WEBHOOK_FORWARD_INGESTION_V2_HISTORICAL_CLAIM_ISOLATION',
   SOURCE_TYPE: 'WEBHOOK',
   SOURCE_EXPECTED_VALUE: 'QBO_WEBHOOK',
   CUTOVER_PROPERTY_KEY: 'QBO_WEBHOOK_FORWARD_INGESTION_CUTOVER_V1',
@@ -80,6 +80,7 @@ function testQboWebhookForwardIngestionReadiness() {
     recoveryRegistrationScanSupported: true,
     dispatcherSupported: true,
     singleActiveWorkerChain: true,
+    historicalClaimIsolation: true,
     cutoverInitialized: !!cutover,
     cutoverAt: cutover ? cutover.cutoverAt : '',
     historicalReceiptForwardSweepEnabled: false,
@@ -257,7 +258,11 @@ function runNextQboWebhookIngestionWork() {
     while (Date.now() - startedMs < QBO_WEBHOOK_FORWARD_INGESTION_.WORKER_RUNTIME_BUDGET_MS) {
       const remaining = QBO_WEBHOOK_FORWARD_INGESTION_.WORKER_RUNTIME_BUDGET_MS - (Date.now() - startedMs);
       if (workUnits > 0 && remaining < QBO_WEBHOOK_FORWARD_INGESTION_.MIN_SAFE_NEW_WORK_MS) break;
-      const source = qboForwardIngestionClaimNext_(QBO_WEBHOOK_FORWARD_INGESTION_.SOURCE_TYPE, workerId);
+      const source = qboForwardIngestionClaimNextMatching_(
+        QBO_WEBHOOK_FORWARD_INGESTION_.SOURCE_TYPE,
+        workerId,
+        function(row) { return String(row.SourceStatus || '') !== 'HISTORICAL_RECONSTRUCTION'; }
+      );
       if (!source) break;
       try {
         const result = qboWebhookForwardIngestClaimedSource_(source, workerId);
