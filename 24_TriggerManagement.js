@@ -988,6 +988,9 @@ function testQboStateCaptureAutoRegistrationOnce() {
     );
 
     const registration = registerQboCompletedFullExportSource_(runId, exportKey);
+    if (registration && registration.sourceId && typeof registerQboFullExportSourceForForwardIngestion_ === 'function') {
+      registration.forwardIngestion = registerQboFullExportSourceForForwardIngestion_(registration.sourceId);
+    }
 
     recordQboScheduledRunProgress_(runId, 1, 0, 1, '');
     recordQboScheduledRunComplete_(runId, new Date(), 1, 0);

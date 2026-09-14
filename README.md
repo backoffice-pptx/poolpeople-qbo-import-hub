@@ -644,3 +644,16 @@ Do not resume `auditQboHistoricalFlattenedContractCoverageNext()` until the exce
 - The backfill is bounded, resumable, idempotent, checkpoints after each completed cycle, and uses its own short-lived worker lease and one-time continuation trigger chain.
 - `previewQboNativeCdcHistoricalRegistrationBackfill()` is discovery-only and performs no ledger mutation.
 - State Application remains disabled.
+
+## v1.5.68 — FULL_EXPORT forward ingestion
+
+- Preserves the locked source-ownership boundary: `01_Sources` remains the authoritative FULL_EXPORT/FULL_EXPORT_LEGACY inventory, while `05_Forward_Ingestion_Control` is the shared Native CDC / Webhook / FULL_EXPORT processing and checkpoint ledger.
+- Adds `106_QBO_FullExportForwardIngestion.js` to bridge only post-cutover standard `FULL_EXPORT` sources from `01_Sources` into `05_Forward_Ingestion_Control`, normalize parent RawJSON through the governed V2 observation contract, and persist immutable Change Payload shards.
+- Adds a durable one-time cutover marker via `initializeQboFullExportForwardIngestionCutover()`. Historical pre-cutover `01_Sources` rows are never swept into the forward path; they remain owned by the controlled historical Change Payload backfill.
+- `FULL_EXPORT_LEGACY` is historical-backfill-only. `PREFERENCES` remains deliberately deferred from entity Change Payload ingestion pending its separate governed attribute-level Preferences State History implementation.
+- The standard FULL_EXPORT production auto-registration wrapper now attempts the exact `01_Sources` -> `05_Forward_Ingestion_Control` handoff after `01_Sources` registration has completed and released its lock. A forward-ingestion handoff failure is logged and cannot retroactively turn a successful QBO export into an exporter failure.
+- Adds `registerPendingQboFullExportSourcesForForwardIngestion()` as an idempotent recovery scan. It reads `01_Sources` as discovery authority but only registers eligible post-cutover rows missing from `05`.
+- Adds independent 5-minute `dispatchQboFullExportIngestion` support with its own pipeline lease, bounded 100-row work units, 210-second runtime budget, 30-second minimum-safe-new-work threshold, and durable checkpointing through the shared ledger.
+- Forward FULL_EXPORT RawJSON is fail-closed: missing, truncated, invalid, identity-mismatched, or non-normalizable raw entity evidence blocks that source rather than manufacturing canonical state.
+- The controlled `testQboStateCaptureAutoRegistrationOnce()` path now also performs the FULL_EXPORT forward-ingestion handoff when v1.5.68 is present, allowing runtime proof of `01_Sources -> 05 -> Change Payloads` before the nightly FULL_EXPORT schedule is re-enabled.
+- State Application remains disabled. No writes to `10_Snapshot_Records`, `11_Change_Records`, or `12_Change_Detail` are enabled in this release.

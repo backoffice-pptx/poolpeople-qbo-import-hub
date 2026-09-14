@@ -268,7 +268,11 @@ function registerQboCompletedFullExportSource_(runId, exportKey) {
  */
 function safeRegisterQboCompletedFullExportSource_(runId, exportKey) {
   try {
-    return registerQboCompletedFullExportSource_(runId, exportKey);
+    const registration = registerQboCompletedFullExportSource_(runId, exportKey);
+    if (registration && registration.sourceId && typeof safeRegisterQboFullExportSourceForForwardIngestion_ === 'function') {
+      registration.forwardIngestion = safeRegisterQboFullExportSourceForForwardIngestion_(registration.sourceId);
+    }
+    return registration;
   } catch (error) {
     console.error(
       '[STATE CAPTURE SOURCES] | AUTO REGISTER ERROR' +
