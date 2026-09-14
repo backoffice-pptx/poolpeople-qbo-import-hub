@@ -630,3 +630,17 @@ Do not resume `auditQboHistoricalFlattenedContractCoverageNext()` until the exce
 - `repairQboNativeCdc0400RegisteredAt()` performs the one-time repair for the 20 v1.5.65 `0400Z` rows using the observed automatic handoff time `2026-09-14T04:22:53Z` from the production execution log.
 - `validateQboNativeCdcRegisteredAtCompleteness()` verifies no Native CDC control rows have blank `RegisteredAt` values.
 - No acquisition, watermark, Change Payload, historical backfill, or State Application semantics changed.
+
+
+## v1.5.67 — Historical Native CDC acquisition-output registration backfill
+
+- Adds `105_QBO_NativeCdcHistoricalRegistrationBackfill.js` for the one-time discovery and registration of historical Native CDC acquisition evidence into `05_Forward_Ingestion_Control`.
+- Discovery supports both the preserved legacy flat `Native CDC/<cycle>` layout and the prospective UTC `Native CDC/YYYY/MM/DD/<cycle>` layout. Historical evidence is never moved, renamed, or rewritten.
+- Startup freezes the ordered set of committed manifests that still contain one or more unregistered source units. Resume authority is the durable backfill state in Script Properties; Drive enumeration is discovery-only.
+- Registration remains idempotent by `NATIVE_CDC|<CycleId>|<EntityType>` and reuses the shared forward-ingestion ledger.
+- Historical temporal safety is enforced before registration: non-delete observations must normalize completely from the captured CDC entity object itself. The historical backfill never performs a current targeted QBO fetch and never treats current QBO state as historical event state.
+- Historical evidence that is missing, corrupted, count-mismatched, or incomplete is still inventoried in the ledger as `BLOCKED` with an explicit evidence exception so the normal Native CDC dispatcher cannot process it silently.
+- `103_QBO_ForwardIngestionControl.js` now supports controlled initial registration as `AVAILABLE` or `BLOCKED`; forward production registrations continue to default to `AVAILABLE`.
+- The backfill is bounded, resumable, idempotent, checkpoints after each completed cycle, and uses its own short-lived worker lease and one-time continuation trigger chain.
+- `previewQboNativeCdcHistoricalRegistrationBackfill()` is discovery-only and performs no ledger mutation.
+- State Application remains disabled.

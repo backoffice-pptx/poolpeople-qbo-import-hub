@@ -1,7 +1,7 @@
 /** ============================================================================
  * Application : 50 QBO Import Hub Standalone
  * Module      : 103_QBO_ForwardIngestionControl.js
- * Version     : 1.5.66
+ * Version     : 1.5.67
  * Purpose     : Shared durable forward-ingestion control ledger for normalized
  *               observations from Native CDC, Webhooks, and FULL_EXPORT.
  *
@@ -17,7 +17,7 @@
  */
 
 const QBO_FORWARD_INGESTION_CONTROL_ = Object.freeze({
-  VERSION: 'QBO_FORWARD_INGESTION_CONTROL_V2',
+  VERSION: 'QBO_FORWARD_INGESTION_CONTROL_V3',
   SHEET_NAME: '05_Forward_Ingestion_Control',
   CLAIM_TIMEOUT_MS: 360000,
   LOCK_TIMEOUT_MS: 30000,
@@ -73,7 +73,8 @@ function provisionQboForwardIngestionControl() {
     ingestionLogIsResumeControl: false,
     registeredAtRequired: true,
     registrationTimestampImmutable: true,
-    postInsertRegisteredAtVerification: true
+    postInsertRegisteredAtVerification: true,
+    initialBlockedRegistrationSupported: true
   };
   console.log('[FORWARD INGESTION] | CONTROL READY | ' + JSON.stringify(result));
   return result;
@@ -179,6 +180,13 @@ function qboForwardIngestionRegisterSource_(source) {
     }
 
     const registeredAt = qboForwardIngestionResolveRegisteredAt_(source.registeredAt);
+    const initialProcessingStatus = String(source.processingStatus || QBO_FORWARD_INGESTION_CONTROL_.STATUS_AVAILABLE);
+    if ([QBO_FORWARD_INGESTION_CONTROL_.STATUS_AVAILABLE, QBO_FORWARD_INGESTION_CONTROL_.STATUS_BLOCKED].indexOf(initialProcessingStatus) < 0) {
+      throw new Error('FORWARD_INGESTION_REGISTER_INVALID_INITIAL_STATUS ' + initialProcessingStatus);
+    }
+    const initialProcessingError = initialProcessingStatus === QBO_FORWARD_INGESTION_CONTROL_.STATUS_BLOCKED
+      ? String(source.processingError || 'FORWARD_INGESTION_REGISTERED_BLOCKED')
+      : '';
     const row = [
       sourceId,
       sourceType,
@@ -196,7 +204,7 @@ function qboForwardIngestionRegisterSource_(source) {
       source.requestStartedAt || '',
       source.requestCompletedAt || '',
       String(source.sourceStatus || 'AVAILABLE'),
-      QBO_FORWARD_INGESTION_CONTROL_.STATUS_AVAILABLE,
+      initialProcessingStatus,
       0,
       source.observationCount === undefined ? '' : Number(source.observationCount || 0),
       0,
@@ -207,7 +215,7 @@ function qboForwardIngestionRegisterSource_(source) {
       '',
       '',
       '',
-      '',
+      initialProcessingError,
       registeredAt
     ];
     const rowNumber = sheet.getLastRow() + 1;
