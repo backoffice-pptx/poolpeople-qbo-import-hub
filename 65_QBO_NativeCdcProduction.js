@@ -9,6 +9,9 @@
  *   - removeQboNativeCdcTriggers()
  *   - listQboNativeCdcTriggers()
  *   - listQboNativeCdcStatus()
+ *   - pauseQboNativeCdcProduction()
+ *   - resumeQboNativeCdcProduction()
+ *   - retryPendingQboNativeCdcIngestionRegistration()
  *   - startQboNativeCdcCycle()
  *   - resumeQboNativeCdcCycle()
  * Trigger entry point:
@@ -34,9 +37,85 @@ function testQboNativeCdcProductionConfiguration() {
     cycleMinutes: cfg.CYCLE_MINUTES,
     entitiesPerWave: cfg.ENTITIES_PER_WAVE,
     workerRuntimeBudgetMs: cfg.WORKER_RUNTIME_BUDGET_MS,
-    workerLeaseMs: cfg.WORKER_LEASE_MS
+    workerLeaseMs: cfg.WORKER_LEASE_MS,
+    productionPaused: qboNativeCdcIsPaused_(),
+    newEvidenceLayout: QBO_NATIVE_CDC_PRODUCTION.DATE_PARTITION_NEW_EVIDENCE ? 'UTC_YYYY/MM/DD' : 'FLAT',
+    automaticForwardRegistration: true
   };
   console.log('[NATIVE CDC PROD] | CONFIG OK | ' + JSON.stringify(result, null, 2));
+  return result;
+}
+
+function pauseQboNativeCdcProduction() {
+  let result = null;
+  qboNativeCdcWithControlLock_(function() {
+    const state = qboNativeCdcReadState_();
+    const now = Date.now();
+    const activeStatus = !!(state && ['RUNNING', 'INITIALIZING', 'FINALIZING'].indexOf(String(state.status || '')) >= 0);
+    const workerLeaseActive = !!(state && state.workerLeaseOwner && Number(state.workerLeaseExpiresAtMs || 0) > now);
+    if (activeStatus || workerLeaseActive) {
+      result = {
+        action: 'REFUSED_ACTIVE_CYCLE',
+        cycleId: state && state.cycleId ? state.cycleId : '',
+        status: state && state.status ? state.status : '',
+        workerLeaseActive: workerLeaseActive
+      };
+      return;
+    }
+
+    PropertiesService.getScriptProperties().setProperty(QBO_NATIVE_CDC_PRODUCTION.PAUSE_PROPERTY_KEY, 'true');
+    qboNativeCdcDeleteManagedTriggers_();
+    result = {
+      action: 'PAUSED',
+      productionPaused: true,
+      recurringStartRemoved: true,
+      pendingContinuationsRemoved: true,
+      committedWatermark: PropertiesService.getScriptProperties().getProperty(QBO_NATIVE_CDC_PRODUCTION.WATERMARK_PROPERTY_KEY) || '',
+      cycleId: state && state.cycleId ? state.cycleId : '',
+      status: state && state.status ? state.status : 'IDLE'
+    };
+  });
+  console.log('[NATIVE CDC PROD] | PAUSE | ' + JSON.stringify(result));
+  return result;
+}
+
+function resumeQboNativeCdcProduction() {
+  let result = null;
+  qboNativeCdcWithControlLock_(function() {
+    const state = qboNativeCdcReadState_();
+    const now = Date.now();
+    const activeStatus = !!(state && ['RUNNING', 'INITIALIZING', 'FINALIZING'].indexOf(String(state.status || '')) >= 0);
+    const workerLeaseActive = !!(state && state.workerLeaseOwner && Number(state.workerLeaseExpiresAtMs || 0) > now);
+    if (activeStatus || workerLeaseActive) {
+      result = {
+        action: 'REFUSED_ACTIVE_CYCLE',
+        cycleId: state && state.cycleId ? state.cycleId : '',
+        status: state && state.status ? state.status : '',
+        workerLeaseActive: workerLeaseActive
+      };
+      return;
+    }
+
+    const props = PropertiesService.getScriptProperties();
+    props.deleteProperty(QBO_NATIVE_CDC_PRODUCTION.PAUSE_PROPERTY_KEY);
+    // Resume starts from a clean scheduler surface: no stale continuation is
+    // recreated. Only the recurring cycle starter is installed.
+    qboNativeCdcDeleteManagedTriggers_();
+    ScriptApp.newTrigger(QBO_NATIVE_CDC_PRODUCTION.TRIGGER_HANDLERS.START)
+      .timeBased()
+      .everyMinutes(QBO_NATIVE_CDC_PRODUCTION.CYCLE_MINUTES)
+      .create();
+    result = {
+      action: 'RESUMED',
+      productionPaused: false,
+      recurringStartInstalled: true,
+      pendingContinuationsInstalled: false,
+      committedWatermark: props.getProperty(QBO_NATIVE_CDC_PRODUCTION.WATERMARK_PROPERTY_KEY) || '',
+      cycleId: state && state.cycleId ? state.cycleId : '',
+      status: state && state.status ? state.status : 'IDLE'
+    };
+  });
+  console.log('[NATIVE CDC PROD] | RESUME PRODUCTION | ' + JSON.stringify(result));
   return result;
 }
 
@@ -79,7 +158,7 @@ function listQboNativeCdcTriggers() {
 function listQboNativeCdcStatus() {
   const state = qboNativeCdcReadState_();
   if (!state) {
-    const empty = {status: 'IDLE', watermark: PropertiesService.getScriptProperties().getProperty(QBO_NATIVE_CDC_PRODUCTION.WATERMARK_PROPERTY_KEY) || '', activeCycle: false};
+    const empty = {status: 'IDLE', watermark: PropertiesService.getScriptProperties().getProperty(QBO_NATIVE_CDC_PRODUCTION.WATERMARK_PROPERTY_KEY) || '', activeCycle: false, productionPaused: qboNativeCdcIsPaused_()};
     console.log('[NATIVE CDC PROD] | STATUS | ' + JSON.stringify(empty, null, 2));
     return empty;
   }
@@ -87,7 +166,10 @@ function listQboNativeCdcStatus() {
   const result = Object.assign({}, state, {
     activeCycle: state.status === 'RUNNING',
     workerLeaseActive: !!(state.workerLeaseOwner && Number(state.workerLeaseExpiresAtMs || 0) > now),
-    stale: state.status === 'RUNNING' && (now - Number(state.lastHeartbeatAtMs || state.startedAtMs || now) > QBO_NATIVE_CDC_PRODUCTION.STALE_CYCLE_MS)
+    stale: state.status === 'RUNNING' && (now - Number(state.lastHeartbeatAtMs || state.startedAtMs || now) > QBO_NATIVE_CDC_PRODUCTION.STALE_CYCLE_MS),
+    productionPaused: qboNativeCdcIsPaused_(),
+    newEvidenceLayout: QBO_NATIVE_CDC_PRODUCTION.DATE_PARTITION_NEW_EVIDENCE ? 'UTC_YYYY/MM/DD' : 'FLAT',
+    automaticForwardRegistration: true
   });
   delete result.workerLeaseOwner;
   console.log('[NATIVE CDC PROD] | STATUS | ' + JSON.stringify(result, null, 2));
@@ -105,6 +187,10 @@ function startQboNativeCdcCycle() {
   // Reserve initialization atomically, then release the project-wide lock
   // before any Drive operation.
   qboNativeCdcWithControlLock_(function() {
+    if (qboNativeCdcIsPaused_()) {
+      action = {action: 'PAUSED', productionPaused: true};
+      return;
+    }
     const current = qboNativeCdcReadState_();
     const now = Date.now();
     if (current && (current.status === 'RUNNING' || current.status === 'INITIALIZING' || current.status === 'FINALIZING')) {
@@ -125,9 +211,9 @@ function startQboNativeCdcCycle() {
   });
   if (action) return action;
 
-  const evidenceFolder = qboNativeCdcResolveEvidenceFolder_();
+  const runParentFolder = qboNativeCdcResolveRunParentFolder_(started);
   const runFolderName = QBO_NATIVE_CDC_PRODUCTION.RUN_FOLDER_PREFIX + Utilities.formatDate(started, 'UTC', 'yyyyMMdd_HHmmss_SSS') + '_' + cycleId;
-  const runFolder = evidenceFolder.createFolder(runFolderName);
+  const runFolder = runParentFolder.createFolder(runFolderName);
 
   let state;
   qboNativeCdcWithControlLock_(function() {
@@ -157,6 +243,7 @@ function startQboNativeCdcCycle() {
 function resumeQboNativeCdcCycle() {
   let result;
   qboNativeCdcWithControlLock_(function() {
+    if (qboNativeCdcIsPaused_()) { result = {action: 'PAUSED', productionPaused: true}; return; }
     const state = qboNativeCdcReadState_();
     if (!state || state.status !== 'RUNNING') { result = {action: 'NO_ACTIVE_CYCLE'}; return; }
     qboNativeCdcEnsureContinuationTriggerLocked_();
@@ -210,6 +297,7 @@ function qboNativeCdcClaimWorker_(workerId, continuationId) {
   let claimed = null;
   qboNativeCdcWithControlLock_(function() {
     qboNativeCdcDeleteTriggersByHandlerLocked_(QBO_NATIVE_CDC_PRODUCTION.TRIGGER_HANDLERS.NEXT);
+    if (qboNativeCdcIsPaused_()) return;
     const state = qboNativeCdcReadState_();
     if (!state || state.status !== 'RUNNING') return;
     const now = Date.now();
@@ -363,9 +451,82 @@ function qboNativeCdcFinalizeCycle_(workerId, cycleId) {
     qboNativeCdcWriteState_(state);
     completed = Object.assign({}, state);
   });
-  qboNativeCdcWriteManifest_(completed);
+  const committedManifestFile = qboNativeCdcWriteManifest_(completed);
   console.log('[NATIVE CDC PROD] | CYCLE COMPLETE | cycle=' + completed.cycleId + ' | entities=' + completed.completedEntityCount + ' | watermark=' + completed.committedWatermark);
+
+  // Registration is a post-commit handoff. The acquisition watermark is already
+  // authoritative at this point. Persist a durable pending handoff before the
+  // registration attempt so a transient Sheet/Drive failure can be retried by
+  // the independent ingestion dispatcher without reopening the CDC window.
+  qboNativeCdcPublishIngestionHandoff_(completed.cycleId, committedManifestFile.getId());
 }
+function qboNativeCdcPublishIngestionHandoff_(cycleId, manifestFileId) {
+  const pending = {
+    cycleId: String(cycleId || ''),
+    manifestFileId: String(manifestFileId || ''),
+    createdAt: new Date().toISOString()
+  };
+  qboNativeCdcEnqueueIngestionHandoff_(pending);
+  try {
+    const result = registerQboNativeCdcManifestForIngestion_(pending.manifestFileId);
+    qboNativeCdcRemoveIngestionHandoff_(pending);
+    console.log('[NATIVE CDC PROD] | INGESTION HANDOFF REGISTERED | ' + JSON.stringify({cycleId:pending.cycleId, manifestFileId:pending.manifestFileId, registered:result.registered, alreadyRegistered:result.alreadyRegistered}));
+    return {registered:true, result:result};
+  } catch (error) {
+    console.error('[NATIVE CDC PROD] | INGESTION HANDOFF PENDING | cycle=' + pending.cycleId + ' | manifestFileId=' + pending.manifestFileId + ' | ' + (error && error.message ? error.message : error));
+    return {registered:false, error:String(error && error.message ? error.message : error)};
+  }
+}
+
+function retryPendingQboNativeCdcIngestionRegistration() {
+  const queue = qboNativeCdcReadIngestionHandoffQueue_();
+  if (!queue.length) {
+    const empty = {action:'NO_PENDING_HANDOFF'};
+    console.log('[NATIVE CDC PROD] | INGESTION HANDOFF | ' + JSON.stringify(empty));
+    return empty;
+  }
+  const pending = queue[0];
+  const result = registerQboNativeCdcManifestForIngestion_(pending.manifestFileId);
+  qboNativeCdcRemoveIngestionHandoff_(pending);
+  const remaining = qboNativeCdcReadIngestionHandoffQueue_().length;
+  const out = {action:'REGISTERED', cycleId:pending.cycleId, manifestFileId:pending.manifestFileId, registered:result.registered, alreadyRegistered:result.alreadyRegistered, remainingPending:remaining};
+  console.log('[NATIVE CDC PROD] | INGESTION HANDOFF | ' + JSON.stringify(out));
+  return out;
+}
+
+function qboNativeCdcEnqueueIngestionHandoff_(pending) {
+  qboNativeCdcWithControlLock_(function() {
+    const queue = qboNativeCdcReadIngestionHandoffQueue_();
+    const found = queue.some(function(item) { return item.cycleId === pending.cycleId && item.manifestFileId === pending.manifestFileId; });
+    if (!found) queue.push(pending);
+    PropertiesService.getScriptProperties().setProperty(QBO_NATIVE_CDC_PRODUCTION.INGESTION_HANDOFF_PROPERTY_KEY, JSON.stringify(queue));
+  });
+}
+
+function qboNativeCdcRemoveIngestionHandoff_(pending) {
+  qboNativeCdcWithControlLock_(function() {
+    const queue = qboNativeCdcReadIngestionHandoffQueue_().filter(function(item) {
+      return !(item.cycleId === pending.cycleId && item.manifestFileId === pending.manifestFileId);
+    });
+    const props = PropertiesService.getScriptProperties();
+    if (queue.length) props.setProperty(QBO_NATIVE_CDC_PRODUCTION.INGESTION_HANDOFF_PROPERTY_KEY, JSON.stringify(queue));
+    else props.deleteProperty(QBO_NATIVE_CDC_PRODUCTION.INGESTION_HANDOFF_PROPERTY_KEY);
+  });
+}
+
+function qboNativeCdcReadIngestionHandoffQueue_() {
+  const raw = PropertiesService.getScriptProperties().getProperty(QBO_NATIVE_CDC_PRODUCTION.INGESTION_HANDOFF_PROPERTY_KEY);
+  if (!raw) return [];
+  let queue;
+  try { queue = JSON.parse(raw); }
+  catch (error) { throw new Error('NATIVE_CDC_PENDING_INGESTION_HANDOFF_INVALID_JSON'); }
+  if (!Array.isArray(queue)) throw new Error('NATIVE_CDC_PENDING_INGESTION_HANDOFF_INVALID_SCHEMA');
+  queue.forEach(function(item) {
+    if (!item || !item.manifestFileId || !item.cycleId) throw new Error('NATIVE_CDC_PENDING_INGESTION_HANDOFF_INCOMPLETE');
+  });
+  return queue;
+}
+
 function qboNativeCdcRecordWorkerError_(workerId, error) {
   const message = error && error.message ? error.message : String(error);
   let errored = null;
@@ -407,6 +568,10 @@ function qboNativeCdcReleaseEntityLease_(entityName, workerId, cycleId) {
 
 function qboNativeCdcScheduleIfNeeded_() {
   qboNativeCdcWithControlLock_(function() {
+    if (qboNativeCdcIsPaused_()) {
+      qboNativeCdcDeleteTriggersByHandlerLocked_(QBO_NATIVE_CDC_PRODUCTION.TRIGGER_HANDLERS.NEXT);
+      return;
+    }
     const state = qboNativeCdcReadState_();
     if (state && state.status === 'RUNNING') qboNativeCdcEnsureContinuationTriggerLocked_();
     else qboNativeCdcDeleteTriggersByHandlerLocked_(QBO_NATIVE_CDC_PRODUCTION.TRIGGER_HANDLERS.NEXT);
@@ -414,11 +579,16 @@ function qboNativeCdcScheduleIfNeeded_() {
 }
 
 function qboNativeCdcEnsureContinuationTriggerLocked_() {
+  if (qboNativeCdcIsPaused_()) return;
   const handler = QBO_NATIVE_CDC_PRODUCTION.TRIGGER_HANDLERS.NEXT;
   const found = ScriptApp.getProjectTriggers().some(function(trigger) { return trigger.getHandlerFunction() === handler; });
   if (found) return;
   ScriptApp.newTrigger(handler).timeBased().after(QBO_NATIVE_CDC_PRODUCTION.CONTINUATION_DELAY_MS).create();
   console.log('[NATIVE CDC PROD] | CONTINUATION SCHEDULED | afterMs=' + QBO_NATIVE_CDC_PRODUCTION.CONTINUATION_DELAY_MS);
+}
+
+function qboNativeCdcIsPaused_() {
+  return String(PropertiesService.getScriptProperties().getProperty(QBO_NATIVE_CDC_PRODUCTION.PAUSE_PROPERTY_KEY) || '').toLowerCase() === 'true';
 }
 
 function qboNativeCdcDeleteManagedTriggers_() {
@@ -537,6 +707,27 @@ function qboNativeCdcResolveEvidenceFolder_() {
   const folderId = asset && String(asset.ResourceIdentifier || '').trim();
   if (!folderId) throw new Error('Application 05 returned no ResourceIdentifier for governed asset ' + QBO_NATIVE_CDC_PRODUCTION.EVIDENCE_FOLDER_ASSET_KEY + '.');
   try { return DriveApp.getFolderById(folderId); } catch (error) { throw new Error('Unable to open governed Native CDC evidence folder ' + folderId + ': ' + (error && error.message ? error.message : String(error))); }
+}
+
+function qboNativeCdcResolveRunParentFolder_(startedAt) {
+  const root = qboNativeCdcResolveEvidenceFolder_();
+  if (!QBO_NATIVE_CDC_PRODUCTION.DATE_PARTITION_NEW_EVIDENCE) return root;
+  const started = startedAt instanceof Date ? startedAt : new Date(startedAt);
+  if (isNaN(started.getTime())) throw new Error('NATIVE_CDC_INVALID_RUN_PARTITION_DATE');
+  const year = Utilities.formatDate(started, 'UTC', 'yyyy');
+  const month = Utilities.formatDate(started, 'UTC', 'MM');
+  const day = Utilities.formatDate(started, 'UTC', 'dd');
+  return qboNativeCdcGetOrCreateSingleChildFolder_(qboNativeCdcGetOrCreateSingleChildFolder_(qboNativeCdcGetOrCreateSingleChildFolder_(root, year), month), day);
+}
+
+function qboNativeCdcGetOrCreateSingleChildFolder_(parent, name) {
+  const matches = parent.getFoldersByName(name);
+  if (matches.hasNext()) {
+    const folder = matches.next();
+    if (matches.hasNext()) throw new Error('NATIVE_CDC_DUPLICATE_PARTITION_FOLDER parentId=' + parent.getId() + ' name=' + name);
+    return folder;
+  }
+  return parent.createFolder(name);
 }
 
 function qboNativeCdcSha256_(text) {

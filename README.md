@@ -565,3 +565,68 @@ Do not resume `auditQboHistoricalFlattenedContractCoverageNext()` until the exce
 - Corrects `testQboRecurringTransactionObservationNormalization()` to validate `RecurringTransactionId` at the governed export-builder boundary.
 - Confirms `QBO_CANONICAL_STATE_V2` intentionally excludes row identity fields from canonical parent/child row objects while `normalized.entityId` carries the governed entity identity.
 - No recurring normalization semantics, normalization version, historical cursor, persistence, evidence-exception, or State Application behavior changed from v1.5.58.
+
+## v1.5.60 — Shared Forward-Ingestion Control + Native CDC Manual Validation
+
+- Added `103_QBO_ForwardIngestionControl.js` with durable `05_Forward_Ingestion_Control` ledger.
+- The forward-ingestion ledger, not Drive folder enumeration and not `90_Ingestion_Log`, is the authoritative processed/unprocessed/checkpoint control for forward source observations.
+- Ledger contract is source-neutral for `NATIVE_CDC`, `WEBHOOK`, and `FULL_EXPORT`.
+- Added `104_QBO_NativeCdcForwardIngestion.js` for controlled manual registration and ingestion of a fully committed Native CDC cycle.
+- Native CDC cycle registration is idempotent by `NATIVE_CDC|<CycleId>|<EntityType>` and registers all 20 entity evidence units, including empty evidence files.
+- Empty CDC evidence units create no Change Payloads but are durably marked processed after evidence validation.
+- Non-empty CDC evidence is processed in bounded record batches through the existing source adapter, shared V3 normalization, and deterministic Change Payload shard persistence.
+- No State Application writes are enabled.
+- No automatic registration hook or ingestion trigger is enabled in this phase; those will be wired only after runtime validation.
+- No changes were made to shared normalization/persistence modules used by the active historical backfill.
+
+
+## v1.5.61 — Native CDC readiness normalization-version reference repair
+
+- Repairs `testQboNativeCdcForwardIngestionReadiness()` to read the active normalization version from `QBO_CHANGE_PAYLOAD_CONTRACT_.NORMALIZATION_VERSION`.
+- Removes the invalid reference to non-existent `QBO_OBSERVATION_NORMALIZATION_`.
+- Test-only/readiness repair; no Native CDC acquisition, forward-ingestion ledger, persistence, normalization, historical backfill, or State Application behavior changed from v1.5.60.
+
+### v1.5.62 — Native CDC manifest cycle identity adapter repair
+- Corrects manual Native CDC forward-ingestion registration to read the production manifest's governed `cycleId` field.
+- Replaces the invalid `cdcRunId` lookup in `104_QBO_NativeCdcForwardIngestion.js`.
+- No acquisition scheduling, normalization, persistence, historical backfill, automatic registration/dispatch, or State Application behavior changes.
+
+
+### v1.5.63 — Native CDC non-empty historical-cycle manual registration
+- Adds `registerLatestUnregisteredNonEmptyQboNativeCdcCycleForIngestion()` for controlled manual validation/backfill discovery.
+- The helper scans the governed Native CDC evidence root only to discover a completed non-empty cycle; `05_Forward_Ingestion_Control` remains authoritative for registration/progress/resume.
+- Selects the most recent SUCCESS + watermark-committed cycle with `returnedEntityCount > 0` that is not already fully registered, then reuses the existing manifest registration path.
+- No acquisition scheduling, normalization, persistence, historical backfill, automatic dispatcher, or State Application semantics changed.
+
+
+## v1.5.64 — Native CDC production maintenance pause/resume controls
+
+- Adds `pauseQboNativeCdcProduction()` and `resumeQboNativeCdcProduction()`.
+- Pause is intentionally broader than removing only the recurring starter: when no Native CDC cycle/worker is active, it sets a durable production-pause flag and removes both `startQboNativeCdcCycle` and all pending `runNextQboNativeCdcWave` triggers.
+- Pause refuses with `REFUSED_ACTIVE_CYCLE` when the durable cycle state is `RUNNING`, `INITIALIZING`, or `FINALIZING`, or when a worker lease is still active. It does not reset the successful watermark, cycle state, entity metadata, manifests, or source evidence.
+- A starter or continuation invocation that was already dispatched but reaches the control path after the pause flag is set becomes a no-op. This closes the race where deleting a trigger alone cannot cancel an execution that Apps Script has already started.
+- While paused, `startQboNativeCdcCycle()`, `resumeQboNativeCdcCycle()`, continuation claiming, and continuation scheduling all honor the durable pause flag.
+- Resume clears the pause flag, removes any stale managed triggers, and installs only the recurring `startQboNativeCdcCycle` trigger. It does not create a continuation trigger and does not alter the committed watermark.
+- `listQboNativeCdcStatus()` and configuration readiness output now report `productionPaused`.
+- Native CDC internal production version advances from `1.1.0` to `1.1.1`. No CDC windowing, entity acquisition, watermark semantics, forward-ingestion normalization, historical backfill, or State Application behavior changes.
+
+
+## v1.5.65 — Native CDC production handoff, dispatcher, and date-partitioned evidence
+
+- Native CDC acquisition remains a separate pipeline from ingestion and State Application.
+- A SUCCESS cycle is registered into `05_Forward_Ingestion_Control` only after the authoritative watermark is committed and the final manifest is persisted.
+- The post-commit handoff is durable: a durable FIFO of pending manifest registrations is stored in Script Properties before registration; transient registration failure does not reopen or roll back the acquisition watermark, later cycles cannot overwrite an older pending handoff, and the independent dispatcher retries the oldest handoff idempotently.
+- `dispatchQboNativeCdcIngestion` runs independently of acquisition and drains only `NATIVE_CDC` rows from the forward-ingestion ledger through the already runtime-validated adapter/normalization/persistence path.
+- Dispatcher cadence is 5 minutes with a separate pipeline lease enforcing one active Native CDC ingestion worker chain. Installation/removal is explicit through `installQboNativeCdcIngestionDispatcher()` and `removeQboNativeCdcIngestionDispatcher()`.
+- New Native CDC evidence is stored under `Native CDC/YYYY/MM/DD/<cycle folder>` using UTC dates. Existing flat cycle folders are not moved or rewritten. Manual/backfill discovery supports both layouts.
+- `pauseQboNativeCdcProduction()` continues to govern acquisition only: it removes the recurring cycle starter and queued acquisition continuations. The independent ingestion dispatcher is intentionally separate.
+- State Application remains disabled.
+
+
+### v1.5.66 — Forward-ingestion RegisteredAt integrity repair
+- `05_Forward_Ingestion_Control.RegisteredAt` is now a required immutable registration timestamp.
+- Native CDC manifest registration computes one registration timestamp per cycle handoff and passes it explicitly to all 20 source-unit registrations.
+- The shared registration boundary verifies `RegisteredAt` persisted immediately after each insert and fails closed if the cell is blank.
+- `repairQboNativeCdc0400RegisteredAt()` performs the one-time repair for the 20 v1.5.65 `0400Z` rows using the observed automatic handoff time `2026-09-14T04:22:53Z` from the production execution log.
+- `validateQboNativeCdcRegisteredAtCompleteness()` verifies no Native CDC control rows have blank `RegisteredAt` values.
+- No acquisition, watermark, Change Payload, historical backfill, or State Application semantics changed.
