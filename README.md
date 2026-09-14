@@ -1,3 +1,111 @@
+
+### v1.5.52 — Governed source evidence / Raw Entity Evidence adapters
+- Changes the Change Payload contract to explicitly separate immutable `SourceEvidence`, embedded complete `RawEntityEvidence`, and governed `NormalizedEntityState`.
+- Source evidence artifacts remain immutable in Drive and are referenced/hashed rather than duplicated wholesale into every entity payload.
+- Native CDC entity objects are extracted from the CDC response envelope and may serve directly as Raw Entity Evidence only when governed V2 normalization proves them complete; otherwise a targeted QBO entity fetch is required.
+- Webhook receipts are treated strictly as change signals. Non-delete webhook events require targeted QBO fetch before successful normalization; delete events produce governed tombstones.
+- Historical webhook replay refuses to promote a later fetched state as the earlier webhook event state when QBO `LastUpdatedTime` is newer than the webhook event.
+- Empty CDC source responses establish acquisition coverage but create no Change Payloads.
+- FULL_EXPORT remains an independent comprehensive observation/corroboration source, never a deferred completion mechanism for partial CDC/Webhook observations.
+- Adds `98_QBO_SourceObservationAdapters.js` and readiness test `testQboSourceObservationAdapterReadiness()`.
+
+# v1.5.50 — Native CDC 30-Minute Production Acquisition
+
+
+### v1.5.51 — Immutable Change Payload + shared V2 observation normalization
+- Adds `96_QBO_ChangePayloadContract.js`: one immutable entity observation per Change Payload; payload creation does not determine `BusinessStateChanged`.
+- Adds `97_QBO_ObservationNormalization.js`: shared raw-entity normalization into `QBO_CANONICAL_STATE_V2_FLATTENED_CONTRACT` using the production FULL_EXPORT row builders and governed child contracts.
+- Historical reconstruction can embed the exact RawJSON used for normalization in the immutable payload while retaining source hash/reference/provenance.
+- Establishes the normalization boundary required for FULL_EXPORT, Native CDC, Webhooks, and historical replay before State Application.
+- Historical backfill orchestration and State Application batching are intentionally not wired in this package.
+
+Changed-files-only package for `50 QBO Import Hub Standalone`.
+
+## Purpose
+
+Replaces the legacy monolithic Native CDC production runner with the governed recurring acquisition architecture. Native CDC acquisition is independent of State Application and may run while the V2 historical canonical rebuild continues.
+
+## Production execution model
+
+- One durable starter trigger runs every 30 minutes, 24/7.
+- A cycle freezes one `windowStart` / `windowEnd` and one `CycleId`.
+- 20 supported QBO entities are processed in bounded waves of up to 5 entities.
+- Continuations are scheduled approximately 2 minutes apart.
+- Each entity has `EntityRunId` / `WorkUnitId` identity derived from `CycleId|EntityName`.
+- Each worker has a `ContinuationId`, heartbeat, worker lease, runtime budget, and resumable entity cursor.
+- ScriptLock is used only for short control, lease, and checkpoint mutations. QBO calls and Drive evidence writes occur outside the project-wide lock.
+- Per-entity named leases prevent duplicate acquisition for the same entity.
+- Immutable entity response JSON is reconciled before checkpoint advancement.
+- If Apps Script terminates after writing evidence but before checkpointing, the next worker recovers the existing file and reconstructs missing metadata rather than issuing a replacement observation.
+- The authoritative Native CDC watermark advances only after all 20 entity work units are successfully evidenced and the full-cycle manifest is persisted.
+- Failed/partial cycles do not advance the watermark.
+- The 30-minute starter also acts as stale-cycle recovery by ensuring a continuation for an already-running cycle rather than starting an overlapping window.
+
+## State Application boundary
+
+This package performs acquisition only. It does not write State Capture snapshots, change records, or change detail. Native CDC evidence, Webhooks evidence, and FULL_EXPORT observations will later converge through the normalized observation / State Application pipeline.
+
+## Initial validation and enablement
+
+After copy/push, run in this order and review each log before proceeding:
+
+```javascript
+testQboNativeCdcProductionConfiguration()
+listQboNativeCdcStatus()
+installQboNativeCdcTriggers()
+startQboNativeCdcCycle()
+```
+
+Then use:
+
+```javascript
+listQboNativeCdcStatus()
+listQboNativeCdcTriggers()
+```
+
+Do not manually invoke `runNextQboNativeCdcWave()` during normal production operation.
+
+---
+
+# v1.5.49 — State Capture Contract V2 + Controlled Rebuild/Replay
+
+The State Capture Contract Impact Review is resolved as **VERSION + CONTROLLED REBUILD/REPLAY**. `QBO_CANONICAL_STATE_V1` is preserved as historical evidence and is not reconciled in place.
+
+## Canonical contract
+
+`QBO_CANONICAL_STATE_V2_FLATTENED_CONTRACT` derives canonical business state from the governed flattened parent export plus governed child datasets. RawJSON is independent validation/evidence only and is not canonical input. The V2 builder excludes QBO version/audit metadata, root entity identity, reference display names when a stable ID is present, address technical object IDs, and RawJSON evidence columns. Explicit serialization scaffolding (`declaredType`, `scope`, `globalScope`) is removed from governed JSON containers.
+
+## Controlled rebuild/replay
+
+The V2 replay appends a new versioned snapshot/change/detail stream. It does not delete or rewrite V1 rows. Replay runs historical AVAILABLE sources oldest-to-newest, checkpoints after every source, uses deterministic V2 IDs/hashes for idempotent retries, and uses a bounded worker plus watchdog so hard Apps Script termination can be resumed.
+
+Locking follows the Sep. 12 production remediation doctrine: the replay never holds a project-wide `ScriptLock` while processing a source or writing State Capture data. A rebuild-specific worker lease is stored in Script Properties; `ScriptLock` is used only for short atomic lease/control-property mutations. The lease is heartbeated while a bounded worker is active, expires if a worker is hard-killed, and allows the watchdog to restore the worker chain only when no active lease exists. Source checkpoints still advance only after snapshot/change/detail writes are flushed and their deterministic IDs are reconciled from the workbook.
+
+Before starting replay, run:
+
+```javascript
+testQboCanonicalV2ContractReadiness()
+validateQboFlatteningRemediationContract()
+```
+
+Then start once:
+
+```javascript
+startQboCanonicalV2Rebuild()
+```
+
+Status/recovery controls:
+
+```javascript
+listQboCanonicalV2RebuildStatus()
+resumeQboCanonicalV2Rebuild()
+stopQboCanonicalV2Rebuild()
+```
+
+Do not run the legacy V1 `migrateQboCanonicalState*` entry points after deploying this package. They remain in source only as historical migration/reconciliation evidence.
+
+---
+
 # v1.5.43 — Daily Scheduler Lock-Domain Separation
 
 Production recovery exposed that App 50's independent Native CDC, State Capture, GL backfill, audit, and daily FULL_EXPORT paths all shared the project-wide Apps Script `ScriptLock`. Some non-scheduler pipelines legitimately hold that lock across long-running work, which caused `resumeQboExportSchedule()` to time out for 30 seconds even when the daily scheduler had no active worker claim.
@@ -403,3 +511,57 @@ auditQboCreditMemoHistoricalExceptionEvidence()
 ```
 
 Do not resume `auditQboHistoricalFlattenedContractCoverageNext()` until the exception evidence is reviewed.
+
+
+## v1.5.53 — Durable Change Payload persistence + historical normalization backfill
+- Adds immutable, idempotent JSON shard persistence in governed `QBO_CHANGE_PAYLOADS_FOLDER`.
+- Adds bounded within-source historical FULL_EXPORT normalization with exact SourceIndex + RecordCursor + WorkUnitIndex resume.
+- Watchdog recovery uses durable heartbeat/progress evidence, not lease expiry alone.
+- State Application remains disabled in this package.
+- Historical Master Backup source artifacts currently use `SOURCE_LINEAGE_SHA256` (cryptographic lineage/reference hash), while each embedded entity RawJSON retains its actual SHA-256.
+
+
+## v1.5.54 — Historical payload eligibility/control repair
+- Restricts historical entity Change Payload backfill to `QBO_STATE_CAPTURE.CANONICAL_MIGRATION_SCOPE`; `PREFERENCES` remains a distinct non-entity/current-preferences scope and is not forced through entity normalization.
+- Existing in-flight v1.5.53 run states are forward-compatible: unsupported source IDs already frozen into a run are explicitly skipped with durable progress rather than retried as errors.
+- Compacts historical backfill status output so operational fields are not hidden by the frozen source ID list.
+- Adds pause/resume trigger controls that preserve the durable cursor and run state.
+
+
+## v1.5.55 — Historical evidence exceptions and deterministic-error blocking
+
+- Historical FULL_EXPORT rows with an entity Id but missing, truncated, or invalid RawJSON no longer create fabricated normalized state and no longer strand the backfill.
+- They are persisted as immutable `EVIDENCE_EXCEPTION` Change Payloads with `rawEntityEvidence.complete=false`, an explicit completeness reason, source/workbook/row provenance, and no normalized state.
+- Normalized payload contract version advances to `QBO_CHANGE_PAYLOAD_V3`; already persisted V2 payloads remain immutable historical observations.
+- State Application must ignore `EVIDENCE_EXCEPTION` payloads as canonical state inputs while retaining them as audit/completeness evidence.
+- Unhandled worker errors now set the backfill to `BLOCKED` and suppress automatic continuation, preventing deterministic retry storms. `resumeQboHistoricalChangePayloadBackfill()` can explicitly resume either RUNNING or BLOCKED state after repair.
+- Backfill status now includes `evidenceExceptionCount`.
+- `inspectCurrentQboHistoricalChangePayloadBlockedRow()` reports the current source/row, entity Id, RawJSON length, truncation state, and JSON validity without logging the RawJSON body.
+- The Sep 13 production blocker was confirmed as legacy Deposit Id `69279` in `QBO_Export_Deposits_20260901_030229`, row 14: its RawJSON is larger than a Google Sheets cell and carries the governed truncation marker.
+
+
+### v1.5.56 diagnostic repair
+- Repairs `inspectCurrentQboHistoricalChangePayloadBlockedRow()` to use the governed export manifest API (`getQboExportManifestEntry_`) and `sheetNames[0]`.
+- No historical payload persistence or resume semantics changed from v1.5.55.
+
+
+## v1.5.57 — Blocked-row diagnostic cursor repair
+- `inspectCurrentQboHistoricalChangePayloadBlockedRow()` now prefers a row number preserved in the durable error when that error targets the current source.
+- Falls back to the durable record cursor only when no matching row is encoded in the error.
+- Diagnostic output reports `rowSelection` and `preservedError` so the inspected row is auditable.
+- No Change Payload persistence, evidence-exception, cursor, or resume semantics changed from v1.5.55/v1.5.56.
+
+
+## v1.5.58 — Recurring Transaction wrapper identity normalization repair
+- Repairs shared normalization for QBO `RecurringTransaction` source wrappers whose RawJSON shape is `{Invoice:{...}}`, `{SalesReceipt:{...}}`, etc.
+- Governed recurring-template identity is `RecurDataRef.value` / `RecurringTransactionId`, not the embedded transaction `Id`.
+- Repairs recurring child-row parent identity to use the same governed recurring-template identity.
+- Advances normalization version to `QBO_OBSERVATION_NORMALIZATION_V3_RECURRING_WRAPPER_IDENTITY`; existing immutable payloads remain unchanged.
+- Adds `testQboRecurringTransactionObservationNormalization()` regression test.
+- No historical cursor, shard persistence, evidence-exception, or State Application behavior changes.
+
+
+## v1.5.59 — Recurring Transaction regression-test identity assertion repair
+- Corrects `testQboRecurringTransactionObservationNormalization()` to validate `RecurringTransactionId` at the governed export-builder boundary.
+- Confirms `QBO_CANONICAL_STATE_V2` intentionally excludes row identity fields from canonical parent/child row objects while `normalized.entityId` carries the governed entity identity.
+- No recurring normalization semantics, normalization version, historical cursor, persistence, evidence-exception, or State Application behavior changed from v1.5.58.

@@ -178,7 +178,19 @@ function migrateQboCanonicalStateRefundReceipts() {
  * The cursor advances only after an entire source is durably processed.
  * A retry of the same source is safe because Snapshot/Change/Detail IDs are deterministic.
  */
+
+function qboAssertLegacyCanonicalV1MigrationAllowed_() {
+  if (QBO_STATE_CAPTURE.CANONICALIZATION_VERSION !== 'QBO_CANONICAL_STATE_V1') {
+    throw new Error(
+      'LEGACY_CANONICAL_V1_MIGRATION_DISABLED: active contract=' +
+      QBO_STATE_CAPTURE.CANONICALIZATION_VERSION +
+      '. Use startQboCanonicalV2Rebuild() for VERSION + CONTROLLED REBUILD/REPLAY.'
+    );
+  }
+}
+
 function migrateQboCanonicalStateExportResumable_(exportKey) {
+  qboAssertLegacyCanonicalV1MigrationAllowed_();
   const normalizedExportKey = String(exportKey || '').trim();
   if (QBO_STATE_CAPTURE.CANONICAL_MIGRATION_SCOPE.indexOf(normalizedExportKey) === -1) {
     throw new Error('CONTROLLED_CANONICAL_MIGRATION_SCOPE_VIOLATION: ' + normalizedExportKey);
@@ -475,6 +487,7 @@ function qboCanonicalLoadSourceStateOnly_(source, manifestEntry, priorSnapshotMa
 }
 
 function migrateQboCanonicalStateExport_(exportKey) {
+  qboAssertLegacyCanonicalV1MigrationAllowed_();
   const normalizedExportKey = String(exportKey || '').trim();
   if (QBO_STATE_CAPTURE.CANONICAL_MIGRATION_SCOPE.indexOf(normalizedExportKey) === -1) {
     throw new Error(

@@ -440,7 +440,11 @@ function buildRecurringTransactionLineRows_(recurringTransactions) {
     const transaction = getRecurringEmbeddedTransaction_(recurring);
     const recurringInfo = getRecurringInfo_(recurring, transaction);
     const transactionType = detectRecurringTransactionType_(recurring, transaction);
-    const recurringId = firstPresentValue_([recurring.Id, transaction.Id]);
+    const recurringId = firstPresentValue_([
+      nestedValue_(transaction, 'RecurDataRef.value'),
+      recurring.Id,
+      transaction.Id
+    ]);
     const templateName = firstPresentValue_([
       recurring.Name,
       recurring.TemplateName,
