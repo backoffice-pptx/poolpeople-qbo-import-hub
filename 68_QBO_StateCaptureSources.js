@@ -104,6 +104,10 @@ function testQboStateCaptureConfiguration() {
  * @param {string} exportKey Stable manifest ExportKey.
  * @return {Object} Registration result.
  */
+function isQboStateCaptureControlledTestRunId_(runId) {
+  return String(runId || '').trim().indexOf('STATE_CAPTURE_AUTOREG_TEST_') === 0;
+}
+
 function registerQboCompletedFullExportSource_(runId, exportKey) {
   const normalizedRunId = String(runId || '').trim();
   const normalizedExportKey = String(exportKey || '').trim();

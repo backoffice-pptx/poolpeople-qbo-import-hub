@@ -1,7 +1,7 @@
 /** ============================================================================
  * Application : 50 QBO Import Hub Standalone
  * Module      : 106_QBO_FullExportForwardIngestion.js
- * Version     : 1.5.68
+ * Version     : 1.5.97
  * Purpose     : FULL_EXPORT forward-ingestion bridge from authoritative
  *               01_Sources registration into the shared 05 forward-ingestion
  *               control ledger, followed by normalization into immutable
@@ -22,7 +22,7 @@
  */
 
 const QBO_FULL_EXPORT_FORWARD_INGESTION_ = Object.freeze({
-  VERSION: 'QBO_FULL_EXPORT_FORWARD_INGESTION_V1',
+  VERSION: 'QBO_FULL_EXPORT_FORWARD_INGESTION_V3_TEST_SOURCE_ISOLATION',
   SOURCE_TYPE: 'FULL_EXPORT',
   CUTOVER_PROPERTY_KEY: 'QBO_FULL_EXPORT_FORWARD_INGESTION_CUTOVER_V1',
   BATCH_SIZE: 100,
@@ -119,6 +119,23 @@ function listQboFullExportForwardIngestionStatus() {
     blockedCount: Number(byStatus[QBO_FORWARD_INGESTION_CONTROL_.STATUS_BLOCKED] || 0)
   };
   console.log('[FULL EXPORT INGESTION] | STATUS | ' + JSON.stringify(result));
+  return result;
+}
+
+function pauseQboFullExportIngestion() {
+  const before = listQboFullExportIngestionDispatcher();
+  removeQboFullExportIngestionDispatcher();
+  const after = listQboFullExportIngestionDispatcher();
+  const result = {pipeline:'FULL_EXPORT', paused:true, removedTriggerCount:before.length, activeTriggerCount:after.length};
+  console.log('[FULL EXPORT INGESTION] | PAUSED | ' + JSON.stringify(result));
+  return result;
+}
+
+function resumeQboFullExportIngestion() {
+  installQboFullExportIngestionDispatcher();
+  const after = listQboFullExportIngestionDispatcher();
+  const result = {pipeline:'FULL_EXPORT', paused:false, activeTriggerCount:after.length};
+  console.log('[FULL EXPORT INGESTION] | RESUMED | ' + JSON.stringify(result));
   return result;
 }
 
@@ -431,6 +448,7 @@ function qboFullExportForwardIngestClaimedSource_(control, workerId) {
     ingestionRunId: 'FORWARD_FULL_EXPORT|' + source.sourceRunId,
     workUnitId: workUnitId,
     sourceId: sourceId,
+    sourceRunId: String(source.sourceRunId || ''),
     sourceType: QBO_FULL_EXPORT_FORWARD_INGESTION_.SOURCE_TYPE,
     sourceIndex: '',
     recordCursorStart: cursor,
@@ -487,6 +505,7 @@ function qboFullExportForwardResolveSource_(sourceId) {
 
 function qboFullExportForwardAssessSource_(source, cutover) {
   if (!source) return {eligible:false, reason:'SOURCE_NOT_FOUND'};
+  if (isQboStateCaptureControlledTestRunId_(source.sourceRunId)) return {eligible:false, reason:'CONTROLLED_TEST_SOURCE'};
   if (source.sourceAcquisitionType !== QBO_STATE_CAPTURE.SOURCE_ACQUISITION_TYPE) return {eligible:false, reason:'NOT_STANDARD_FULL_EXPORT'};
   if (source.sourceStatus !== QBO_STATE_CAPTURE.SOURCE_STATUS_AVAILABLE) return {eligible:false, reason:'SOURCE_NOT_AVAILABLE'};
   if (!source.masterBackupFileId || !source.masterBackupFileName) return {eligible:false, reason:'MISSING_MASTER_BACKUP_LINEAGE'};

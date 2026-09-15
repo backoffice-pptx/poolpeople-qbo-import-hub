@@ -691,3 +691,318 @@ Validation: `testQboWebhookHistoricalReconstructionReadiness()`, `previewQboWebh
 - State Application and `04_Webhook_Events` remain disabled.
 
 Validation: run `testQboWebhookHistoricalReconstructionReadiness()` and then `listQboWebhookHistoricalBlockedDiagnostics()`. Confirm the existing eight blocked rows partition into expected temporal mismatches, genuine realm mismatches, and explicit entity-unavailable cases with no unexplained `OTHER_BLOCK` rows.
+
+
+## v1.5.72 — Forward-Ingestion Maintenance Pause/Resume Controls
+- Adds explicit, idempotent maintenance controls for all three recurring forward-ingestion dispatchers without writing additional Script Properties:
+  - `pauseQboNativeCdcIngestion()` / `resumeQboNativeCdcIngestion()`
+  - `pauseQboFullExportIngestion()` / `resumeQboFullExportIngestion()`
+  - `pauseQboWebhookIngestion()` / `resumeQboWebhookIngestion()`
+- Pause removes only the managed recurring dispatcher trigger for that pipeline. It does not mutate `05_Forward_Ingestion_Control`, source evidence, payload shards, cursors, or processing statuses.
+- Resume reinstalls exactly one 5-minute dispatcher using the existing install/remove idempotency pattern.
+- The controls intentionally avoid creating a separate pause-state Script Property so they remain usable during Script Properties storage-quota incidents.
+- State Application remains disabled.
+
+## v1.5.73 — Read-Only Script Properties Storage Diagnostic
+
+- Adds `109_QBO_ScriptPropertiesStorageDiagnostic.js` with `diagnoseQboScriptPropertiesStorage()` for the Sep 14, 2026 Apps Script Properties Service quota incident.
+- The diagnostic is strictly read-only: it calls `getProperties()` and never sets, deletes, rewrites, or cleans up any Script Property.
+- Property values are never logged or returned. Output includes property keys, approximate UTF-8 key/value byte counts, aggregate category totals, growth classifications, the largest properties, and Native CDC entity-metadata cycle counts.
+- Explicitly identifies the per-cycle `QBO_NATIVE_CDC_ENTITY_META_V2__*` family so accumulating Native CDC cycle metadata can be measured separately from singleton control state, cutovers, watermarks, cursors, and transient leases.
+- Approximate byte counts are diagnostic estimates (`UTF-8 bytes(key) + UTF-8 bytes(value)`); Google remains authoritative for quota accounting.
+- No cleanup or migration behavior is included in this release. Use the diagnostic output to design a controlled remediation before deleting or externalizing any property.
+- Forward ingestion and Native CDC production should remain paused while collecting this diagnostic during the active quota incident.
+- State Application remains disabled.
+
+Validation: with the four production/ingestion pipelines paused, run `diagnoseQboScriptPropertiesStorage()` once and capture the `SUMMARY` execution-log object. Do not run any property cleanup before reviewing the result.
+
+## v1.5.74 — Native CDC transient Script Properties retention and controlled cleanup
+- Fixes the production quota incident where per-cycle `QBO_NATIVE_CDC_ENTITY_META_V2__*` properties accumulated indefinitely and consumed approximately 492 KB of the Script Properties store.
+- Adds read-only `previewQboNativeCdcTransientPropertyCleanup()` and compact `verifyQboNativeCdcTransientPropertyCleanup()` diagnostics.
+- Adds controlled `cleanupQboNativeCdcCommittedTransientProperties()`. Public cleanup requires Native CDC production to be paused and refuses to operate while an active RUNNING/INITIALIZING/FINALIZING cycle exists.
+- Cleanup is authorized by durable committed `manifest.json` evidence, not by property age. A manifest must prove `SUCCESS`, `watermarkCommitted=true`, a committed watermark, and a complete exact governed entity-evidence set before the cycle's transient properties are eligible.
+- Cleanup deletes only the completed cycle's `QBO_NATIVE_CDC_ENTITY_META_V2__<cycle>__*` and matching `ATTEMPTS__<cycle>__*` properties. Watermark, current cycle state, pause state, leases, pending ingestion handoff, forward-ingestion ledger, Drive evidence, manifests, and payloads are preserved.
+- Production Native CDC finalization now performs best-effort automatic transient-property cleanup immediately after the final committed manifest is durably written. Cleanup failure is logged as a warning and cannot invalidate an already committed acquisition cycle.
+- The one-time cleanup is idempotent: already-cleaned cycles simply have no remaining transient keys.
+
+
+### v1.5.75 — Forward-ingestion control integrity audit + controlled-test source isolation
+- Adds read-only `auditQboForwardIngestionControlIntegrity()` for lifecycle-integrity validation of `05_Forward_Ingestion_Control`.
+- Validates `RegisteredAt` on every row and terminal timestamp/error invariants by `ProcessingStatus`; no historical timestamps are manufactured or repaired by this version.
+- Correlates blank FULL_EXPORT `RegisteredAt` values to authoritative `01_Sources.RegisteredAt` where exact recovery evidence exists.
+- Explicitly classifies `STATE_CAPTURE_AUTOREG_TEST_*` runs as controlled test evidence. Such rows may remain in `01_Sources` for provenance but are excluded from normal FULL_EXPORT forward-ingestion eligibility and from historical Change Payload backfill eligibility.
+- Existing test-derived `05` rows / Change Payloads are preserved pending a separately controlled provenance decision; this version does not delete or rewrite evidence.
+- State Application remains disabled.
+
+### v1.5.76 — Comprehensive 01/05 ledger integrity audit
+- Expands the v1.5.75 read-only integrity diagnostic into `auditQboStateCaptureLedgerIntegrity()` covering every governed column and every row in both `01_Sources` (19 columns) and `05_Forward_Ingestion_Control` (29 columns).
+- Classifies checks as `VALID`, `VALID_BLANK`, `INVALID`, or `UNVERIFIABLE` and aggregates results by sheet, column, and rule code while returning bounded detail rows.
+- Validates row identity, source type, run/unit identity, entity/export mappings, Drive-style evidence identifiers, SHA-256/hash-type contracts, source/request/window timestamps, source and processing statuses, counters, claim lifecycle, heartbeat/progress/processed chronology, error compatibility, and registration timestamps.
+- Applies source-specific contracts for `NATIVE_CDC`, `WEBHOOK`, `FULL_EXPORT`, `FULL_EXPORT_LEGACY`, Preferences, and controlled `STATE_CAPTURE_AUTOREG_TEST_*` sources.
+- Adds cross-sheet FULL_EXPORT invariants from `05` back to `01_Sources`, including run identity, Master Backup evidence identity/name, observation/request timestamps, source status, and exact `01_Sources.RegisteredAt` recovery evidence where `05.RegisteredAt` is blank.
+- Keeps the original `auditQboForwardIngestionControlIntegrity()` entry point as a backward-compatible wrapper to the comprehensive audit.
+- The audit is strictly read-only. It does not repair historical timestamps, delete controlled-test evidence, mutate source rows, change payloads, or resume any paused pipeline.
+- State Application remains disabled.
+
+Validation: keep all writer pipelines paused and run `auditQboStateCaptureLedgerIntegrity()`. Review the summary first, then the bounded findings list. Do not run any repair until invalid and unverifiable rules are classified as repairable, accepted historical exceptions, or source-data defects.
+
+## v1.5.77 — Full QBO State Capture workbook integrity + sheet-role audit
+
+Adds `112_QBO_StateCaptureWorkbookIntegrityAudit.js` and the public read-only entry point:
+
+```javascript
+auditQboStateCaptureWorkbookIntegrity()
+```
+
+Scope:
+- audits every governed sheet in the `QBO State Capture` workbook, not only `01_Sources` and `05_Forward_Ingestion_Control`;
+- validates exact governed headers and every populated data row using sheet-specific contracts;
+- performs cross-sheet reference checks for FULL_EXPORT source IDs, snapshot references, change-detail references, and contract-audit run IDs;
+- invokes the v1.5.76 all-column `01_Sources` / `05_Forward_Ingestion_Control` audit as a sub-audit;
+- identifies unexpected sheets and missing governed sheets;
+- classifies each sheet by current architectural role and a non-destructive disposition recommendation.
+
+Role classification is intentionally conservative. It distinguishes active authorities from legacy frozen evidence, historical audit evidence, and currently un-wired/reserved source-event sheets. No sheet is deleted or renamed by this audit.
+
+Current role candidates include:
+- active: `00_Controls`, `01_Sources`, `05_Forward_Ingestion_Control`, `90_Ingestion_Log`;
+- legacy/frozen evidence: `00_Control`, `10_State_Capture`, `90_Run_Log`;
+- historical contract-audit evidence: `91_Contract_Audit_Paths`, `92_Contract_Audit_Sources`, `93_Contract_Audit_Runs`;
+- reserved/un-wired pending explicit ownership/deprecation decision: `02_CDC_Run_Manifest`, `03_Native_CDC_Events`, `04_Webhook_Events`;
+- preserved versioned state outputs/migration reference: `10_Snapshot_Records`, `11_Change_Records`, `12_Change_Detail`.
+
+The audit is strictly read-only and applies no repairs, deletions, renames, trigger changes, Drive changes, or Script Properties changes.
+
+
+## v1.5.78 — Durable full-workbook integrity reporting
+- `auditQboStateCaptureWorkbookIntegrity()` remains read-only with respect to production/state data but now writes diagnostic output to `94_Integrity_Audit_Runs` and `95_Integrity_Audit_Findings`.
+- Persists the complete workbook + 01/05 ledger finding set instead of relying on truncated Apps Script logs.
+- `94_Integrity_Audit_Runs` is append-only run history; `95_Integrity_Audit_Findings` is append-only finding detail keyed by AuditRunId.
+- Diagnostic report sheets are excluded from unknown-sheet findings and are never processing/state authority.
+- No repair, deletion, rename, trigger, Drive evidence, or Script Properties mutations are performed by the audit.
+
+## v1.5.79 — Integrity Repair Evidence Assessment
+
+Adds `113_QBO_IntegrityRepairEvidenceAssessment.js` and the public read-only assessment entry point:
+
+```javascript
+assessQboStateCaptureIntegrityRepairEvidence()
+```
+
+The assessment consumes the latest durable `94_Integrity_Audit_Runs` / `95_Integrity_Audit_Findings` result and classifies each finding as one of:
+
+- `EXACT_REPAIR_AVAILABLE`
+- `CONTRACT_FALSE_POSITIVE`
+- `HISTORICAL_EXCEPTION`
+- `GOVERNANCE_DISPOSITION`
+- `SOURCE_EVIDENCE_REVIEW_REQUIRED`
+
+Results are appended to diagnostic-only sheet `96_Integrity_Repair_Assessment`. Production/state sheets are not modified. Exact repair eligibility is intentionally fail-closed: a timestamp is repairable only when an authoritative source contains the exact governed value. Correlated acquisition, observation, payload, or telemetry times are preserved as evidence but are not silently substituted for missing ledger lifecycle timestamps.
+
+`112_QBO_StateCaptureWorkbookIntegrityAudit.js` now recognizes `96_Integrity_Repair_Assessment` as diagnostic output so subsequent full-workbook audits do not misclassify it as an unexpected production sheet.
+
+## v1.5.80 — Exact FULL_EXPORT RegisteredAt repair + audit semantic correction
+
+- Corrects the `01_Sources` ↔ `05_Forward_Ingestion_Control` audit contract: `01_Sources.ObservationStartedAt/ObservationCompletedAt` are not semantically identical to `05.RequestStartedAt/RequestCompletedAt`, so the audit no longer creates the 42 cross-sheet `*_UNVERIFIABLE` false-positive findings. Request timestamps continue to be validated within the source-specific `05` row contract.
+- Adds `114_QBO_StateCaptureExactRepair.js` with public controlled repair entry point:
+
+```javascript
+repairQboStateCaptureExactRegisteredAt()
+```
+
+- The repair consumes only the latest `96_Integrity_Repair_Assessment` rows classified `EXACT_REPAIR_AVAILABLE`, `Confidence=EXACT`, `AutoRepairEligible=true`, targeting `05_Forward_Ingestion_Control.RegisteredAt` for `FULL_EXPORT` and backed by exact `01_Sources.RegisteredAt` evidence.
+- It re-resolves each record by `IngestionSourceId`, revalidates the exact matching `01_Sources.SourceId` and timestamp, fails closed before any write if any candidate is inconsistent, never overwrites a different nonblank value, and is idempotent for already-applied exact values.
+- Successful writes are immediately reread and verified, then append-only repair telemetry is written to `97_Integrity_Repair_Log`.
+- No Native CDC/Webhook lifecycle timestamps are inferred or repaired. No state outputs, Change Payloads, Drive evidence, triggers, Script Properties, or pipeline pause state are changed.
+- `112_QBO_StateCaptureWorkbookIntegrityAudit.js` recognizes `97_Integrity_Repair_Log` as diagnostic output.
+- State Application remains disabled and writer pipelines remain paused pending post-repair audit validation.
+
+
+## v1.5.82 — Resumable exact RegisteredAt repair
+- Makes the v1.5.80 exact repair idempotent after partial failure.
+- Re-resolves target row by IngestionSourceId before and after every write.
+- Retries exact cell persistence up to 3 times with flush + bounded delay.
+- Appends repair telemetry per candidate immediately, so partial runs remain fully evidenced.
+- Existing exact values are preserved as already applied; conflicting nonblank values still fail closed.
+- Scope remains limited to the 21 pre-assessed FULL_EXPORT 05.RegisteredAt repairs.
+
+## v1.5.83 — RegisteredAt exact-recovery evidence assessment
+- Adds `115_QBO_RegisteredAtEvidenceAssessment.js` with public `assessQboBlankRegisteredAtRecoveryEvidence()`.
+- Production/state data are read-only. The diagnostic writes only `98_RegisteredAt_Evidence_Assessment`.
+- Native CDC exact recovery is allowed only when a blank row has nonblank same-cycle sibling rows whose `RegisteredAt` values collapse to exactly one timestamp. This is grounded in both the current (`104`) and historical (`105`) Native CDC registration writers, which capture one `registeredAt` value before iterating all entities in a cycle.
+- `RequestCompletedAt`, manifest timestamps, webhook receipt timestamps, and telemetry are never substituted for `RegisteredAt`.
+- Webhook historical rows are not reconstructed from sibling events because `108` captures `new Date()` independently for each event registration.
+- `112_QBO_StateCaptureWorkbookIntegrityAudit.js` recognizes `98_RegisteredAt_Evidence_Assessment` as diagnostic-only output so future workbook audits do not classify it as an unexpected production sheet.
+
+## v1.5.84 — RegisteredAt artifact correlation assessment
+- Expands `assessQboBlankRegisteredAtRecoveryEvidence()` before any repair decision.
+- Confirms by code contract that Change Payload filenames are content identities (`qbo_change_payload_shard_<SHA256>.json`) and contain no timestamp.
+- Reads the governed source evidence file creation time plus matching Change Payload shard envelope `createdAt` and Drive creation time for the blank-RegisteredAt population and known same-cycle calibration rows.
+- Reports empirical millisecond deltas between surviving known `RegisteredAt` values and artifact timestamps.
+- Artifact timestamps remain corroborating evidence only: source evidence is created during acquisition before registration, while payload envelope/Drive timestamps are independently captured downstream during persistence after registration. No artifact timestamp is promoted to an exact repair candidate merely because it is close or happens to match.
+- Existing exact Native CDC same-cycle sibling evidence remains the only newly authorized exact-recovery channel in this assessment.
+- Production/state data remain read-only; diagnostic output continues to `98_RegisteredAt_Evidence_Assessment`.
+
+## v1.5.85 — Bounded/resumable RegisteredAt Change Payload artifact scan
+- Replaces the unbounded v1.5.84 payload-folder scan path with a separate bounded diagnostic entry point: `scanQboRegisteredAtPayloadArtifactsResumable()`.
+- Runtime budget is 165 seconds per invocation with progress logging approximately every 15 seconds.
+- Uses Drive file-iterator continuation tokens and one compact temporary Script Property checkpoint; checkpoint is deleted automatically when the scan completes.
+- Writes matched Change Payload artifact metadata incrementally to diagnostic-only `99_RegisteredAt_Artifact_Scan` so progress survives interruption.
+- Records `PayloadFileName`, `PayloadFileId`, payload-envelope `createdAt`, Drive creation time, WorkUnitId, and IngestionRunId for each matched shard.
+- Payload filenames remain non-authoritative metadata (`qbo_change_payload_shard_<SHA256>.json`); no production/state repair is performed.
+- `112_QBO_StateCaptureWorkbookIntegrityAudit.js` recognizes sheet 99 as diagnostic output.
+
+### v1.5.86 — RegisteredAt target artifact coverage diagnostic
+
+Adds `diagnoseQboRegisteredAtArtifactCoverage()` to replace blind continuation of the expensive payload-content scan. The diagnostic is read-only and:
+
+- counts the total number of files in the governed Change Payload folder without opening/parsing JSON;
+- summarizes the 05 rows whose `RegisteredAt` is blank;
+- reports `ObservationCount`, `PayloadCount`, and `ShardCount` evidence from 05;
+- compares target source IDs with artifacts already found in `99_RegisteredAt_Artifact_Scan`;
+- reports whether affected rows claim they actually produced payload shards.
+
+Do not continue `scanQboRegisteredAtPayloadArtifactsResumable()` until this diagnostic is reviewed.
+
+
+## v1.5.88 — Forward Ingestion Lifecycle Contract Audit
+
+- Refines the read-only `05_Forward_Ingestion_Control` lifecycle audit to the actual shared control/writer contract.
+- `RegisteredAt` is required for every legitimate ledger row.
+- `PROCESSED` requires `LastHeartbeatAt`, `LastProgressAt`, and `ProcessedAt`, including zero-observation terminal processing because all current adapters checkpoint with `progress:true`.
+- Initial `AVAILABLE` rows (`AttemptCount=0`) may have blank heartbeat/progress timestamps; resumed/partial `AVAILABLE` rows with prior attempts or committed progress require them.
+- `PROCESSING` requires a heartbeat but may legitimately have blank `LastProgressAt` before its first checkpoint.
+- Initially registered `BLOCKED` rows (`AttemptCount=0`) may have blank heartbeat/progress; worker-blocked rows require heartbeat, while progress is required only if committed work already exists.
+- `ProcessedAt` remains required only for `PROCESSED`; `ProcessingError` remains required only for `BLOCKED` and blank for active/successful states.
+- This version is audit-only and does not repair or mutate production/state data.
+
+
+## v1.5.89 — Lifecycle audit correction
+- Corrects the v1.5.88 diagnostic-only integrity audit regression.
+- Removes duplicate validation of `05.RegisteredAt` (one governed required-date check remains).
+- Restores the v1.5.80+ rule that `05.RequestStartedAt` / `05.RequestCompletedAt` are not exact-equality invariants against `01_Sources` observation timestamps.
+- Retains the v1.5.88 lifecycle/state-machine checks, including heartbeat requirements after a worker claim and terminal timestamp requirements for `PROCESSED`.
+- Read-only against production/state data; audit reporting behavior is unchanged.
+
+## v1.5.90 — Native CDC exact RegisteredAt recovery assessment rebased on lifecycle audit
+
+- Reintroduces the read-only Native CDC exact `RegisteredAt` recovery assessment on top of the validated v1.5.89 forward-ingestion lifecycle audit baseline.
+- Adds `117_QBO_NativeCdcRegisteredAtRecoveryAssessment.js` with public entry point:
+
+```javascript
+assessQboNativeCdcRegisteredAtExactRecovery()
+```
+
+- Reads the latest durable workbook-integrity audit and targets only blank `05_Forward_Ingestion_Control.RegisteredAt` findings for `NATIVE_CDC`.
+- Groups all Native CDC `05` rows by `SourceRunId` / cycle and classifies blank targets as `EXACT_RECOVERABLE`, `HISTORICAL_TIMESTAMP_NOT_RECOVERABLE`, or `CONFLICTING_SAME_CYCLE_REGISTERED_AT_VALUES`.
+- Exact recovery is authorized only when all surviving nonblank `RegisteredAt` values within the same cycle collapse to one identical timestamp. This follows the governed Native CDC writer contract in which one registration timestamp is captured before iterating the entity rows for a cycle.
+- Request-completion times, evidence-file times, payload-artifact times, manifest times, and telemetry are not substituted for `RegisteredAt`.
+- Writes diagnostic-only output to `100_Native_CDC_RegAt_Assessment`; no production/state value is mutated and no repair is performed.
+- Updates `112_QBO_StateCaptureWorkbookIntegrityAudit.js` so sheet `100_Native_CDC_RegAt_Assessment` is recognized as diagnostic-only output without altering the v1.5.89 lifecycle ledger rules.
+- The v1.5.86 artifact-coverage result remains controlling for this question: the 106 affected Native CDC rows produced zero observations, zero payloads, and zero shards, so Change Payload artifacts are not an exact-recovery channel for those rows.
+
+
+## v1.5.91 — Lifecycle Timestamp Exact-Recovery Assessment
+- Adds read-only `assessQboLifecycleTimestampExactRecovery()`.
+- Targets latest-audit invalid blanks in `05_Forward_Ingestion_Control` for `LastHeartbeatAt`, `LastProgressAt`, and `ProcessedAt`.
+- Writes diagnostic-only `101_Lifecycle_Timestamp_Assessment`; does not repair production/state data.
+- Exact recovery is authorized only where the writer contract preserves the exact same timestamp elsewhere: terminal PROCESSED checkpoint sibling timestamps; AVAILABLE partial-checkpoint heartbeat/progress siblings; or PROCESSING claim expiry minus the fixed 360000 ms timeout.
+- BLOCKED heartbeat/progress timestamps are not reconstructed from proximate timestamps. Source timestamps, Change Payload `createdAt`, Drive timestamps, and generic ingestion telemetry are not exact substitutes.
+- `112_QBO_StateCaptureWorkbookIntegrityAudit.js` recognizes sheet 101 as diagnostic output.
+
+## v1.5.92 — Historical unrecoverable timestamp exception governance
+
+- Adds `119_QBO_HistoricalTimestampExceptionGovernance.js`.
+- Public establishment function: `establishQboHistoricalTimestampExceptionGovernance()`.
+- Public control function: `auditQboHistoricalTimestampExceptionGovernance()`.
+- Adds diagnostic/governance sheet `102_Historical_Timestamp_Exceptions`.
+- The registry is exact-identity scoped by `IngestionSourceId + ColumnName`; it is not a date-range, source-type, or blanket exception.
+- Establishment is fail-closed and expects the validated v1.5.89/v1.5.90/v1.5.91 baseline: 464 unrecoverable timestamp defects (`RegisteredAt` 107, `LastHeartbeatAt` 127, `LastProgressAt` 115, `ProcessedAt` 115).
+- No historical timestamp is manufactured or backfilled. Registered blanks remain physically blank.
+- `111_QBO_ForwardIngestionIntegrityAudit.js` recognizes only ACTIVE exact-identity registry entries as `HISTORICAL_UNRECOVERABLE_WRITER_DEFECT` / `VALID_BLANK`. Any new or unregistered equivalent blank remains `REQUIRED_DATE_BLANK` / `INVALID`.
+- `112_QBO_StateCaptureWorkbookIntegrityAudit.js` recognizes sheet 102 as diagnostic/governance output.
+- Production/state data remains read-only. The only write performed by establishment is the governance registry itself.
+
+## v1.5.93 — Controlled Test Contamination Assessment
+
+- Adds `120_QBO_ControlledTestContaminationAssessment.js`.
+- Public diagnostic entry point: `assessQboControlledTestContamination()`.
+- The assessment is resumable and production/state read-only. Re-run the same function until it returns `DIAGNOSTIC_COMPLETE`.
+- Exact lineage traced:
+  - controlled-test registration in `01_Sources`;
+  - controlled-test forward-ingestion rows in `05_Forward_Ingestion_Control`;
+  - Change Payload shards by exact `stableBody.sourceId == IngestionSourceId`;
+  - `10_Snapshot_Records` and `11_Change_Records` by exact `SourceId`;
+  - `12_Change_Detail` through exact test-derived `ChangeRecordId` lineage.
+- Diagnostic output only:
+  - `103_Controlled_Test_Assessment` — one summary row per exact controlled-test source;
+  - `104_Controlled_Test_Payload_Artifacts` — one row per exact matching payload shard.
+- No source row, 05 row, Change Payload shard, snapshot, change record, or change detail is changed or deleted.
+- No governance disposition or deletion is authorized by the assessment itself.
+- `112_QBO_StateCaptureWorkbookIntegrityAudit.js` is updated only to recognize sheets 103/104 as diagnostic output with governed header widths.
+
+## v1.5.94 — Targeted Controlled-Test Payload Artifact Reconciliation
+
+- Replaces the v1.5.93 blind/resumable full-folder Change Payload scan with a bounded targeted Drive search derived from the exact controlled-test row already present in `05_Forward_Ingestion_Control`.
+- For the known FULL_EXPORT controlled-test source, derives the deterministic one-batch work unit from the governed writer contract (`RecordCursorStart=0`, `RecordCursorEndExclusive=55`) and validates exact `IngestionSourceId`, `SourceType`, `IngestionRunId`, `WorkUnitId`, cursor bounds, observation count, payload count, evidence file lineage, shard self-hash, and hash-derived filename.
+- Candidate files are narrowed before JSON parsing using the target row's own durable lifecycle timestamps (`RegisteredAt`, request timestamps, heartbeat/progress timestamps, and `ProcessedAt`) plus a five-minute boundary pad and the governed shard filename prefix.
+- Does **not** manufacture the original worker/continuation ID. That value is not retained in the completed `05` row and therefore the shard filename cannot be independently reconstructed from `05` alone.
+- Retires/deletes only the v1.5.93 diagnostic Script Property checkpoint; production/state data and Change Payload artifacts remain read-only.
+- `assessQboControlledTestContamination()` is now expected to complete in one targeted invocation for the known controlled-test source rather than requiring repeated full-folder scans.
+
+
+
+## v1.5.95 — Controlled-Test Targeted Artifact Search Query Repair
+
+- Repairs the v1.5.94 diagnostic failure `Exception: Invalid argument: q` from `DriveApp.Folder.searchFiles()`.
+- Removes dependence on Drive query parsing for the targeted controlled-test artifact search.
+- Enumerates only file metadata in the governed Change Payload folder, filters first by the governed shard filename prefix and the exact lifecycle-derived creation-time window, and opens/parses JSON only for the resulting small candidate set.
+- Preserves all v1.5.94 exact-lineage validation: `IngestionSourceId`, `SourceType`, deterministic `IngestionRunId`, deterministic FULL_EXPORT `WorkUnitId`, cursor bounds, counts, evidence lineage, shard self-hash, and hash-derived filename.
+- Production/state data and Change Payload artifacts remain read-only; no deletion or disposition is authorized.
+
+## v1.5.96 — Governed Controlled-Test Evidence Disposition
+
+- Adds `121_QBO_ControlledTestDisposition.js` with public entry point `disposeQboControlledTestEvidence()`.
+- This is an exact-lineage cleanup for the two known `STATE_CAPTURE_AUTOREG_TEST_*` registrations reconciled by v1.5.95; it is not a generic test-data deletion utility.
+- Fail-closed preflight requires the validated v1.5.95 evidence to remain exact: two controlled-test registrations in `01_Sources`, one corresponding `05_Forward_Ingestion_Control` row, one exact Change Payload shard with 55 observations / 55 payloads, exact shard self-hash / hash-derived filename / evidence lineage, and zero controlled-test rows in `10_Snapshot_Records`, `11_Change_Records`, and `12_Change_Detail`.
+- On successful preflight, removes the two exact controlled-test registrations from active `01_Sources`, removes the one exact controlled-test row from active `05_Forward_Ingestion_Control`, and moves the one exactly reconciled Change Payload shard to Drive trash. The shard is not permanently deleted.
+- Retains `103_Controlled_Test_Assessment` and `104_Controlled_Test_Payload_Artifacts` as durable evidence and marks the summary rows with governance disposition `CONTROLLED_TEST_EVIDENCE_DISPOSED_EXACT_LINEAGE` plus `ProductionDataMutationApplied=true`.
+- The function is idempotent after successful completion and returns `ALREADY_DISPOSED` rather than mutating again.
+- No State Application output is deleted because v1.5.95 proved controlled-test State Application contamination count is zero.
+- Required next control after successful disposition: run `auditQboStateCaptureWorkbookIntegrity()` before implementing the payload-artifact ledger or resuming any paused ingestion cycles.
+
+## v1.5.97 — Payload Artifact Ledger + Historical Reconstruction
+
+- Adds `122_QBO_PayloadArtifactLedger.js` and governed `06_Payload_Artifacts` as the durable child provenance ledger for Change Payload shards.
+- `05_Forward_Ingestion_Control` remains source-level aggregate authority; `06_Payload_Artifacts` stores one row per physical shard file.
+- Minimum provenance includes `IngestionSourceId`, `SourceType`, `SourceRunId`, `IngestionRunId`, `WorkUnitId`, cursor bounds, observation/payload counts, file ID/name/hash, file creation time, and persistence time. Additional fields record `RegistrationMode`, `LineageStatus`, and `ContentVerifiedAt` so historical uncertainty is surfaced rather than guessed.
+- `101_QBO_ChangePayloadPersistence.js` now registers every newly created or idempotently reconciled shard in `06_Payload_Artifacts` before the source-level `05` checkpoint advances. This makes retry recovery deterministic if execution ends between physical shard creation, artifact-ledger registration, and source checkpointing.
+- Native CDC, FULL_EXPORT, and Webhook forward-ingestion writers now pass `SourceRunId` into shard persistence so future artifact provenance is complete at commit time.
+- Adds `123_QBO_PayloadArtifactHistoricalBackfill.js` with `runQboPayloadArtifactHistoricalBackfill()`. Historical reconstruction reads existing Change Payload files and `05` in place, writes only `06` plus diagnostic sheets, verifies shard stable-body SHA-256 and hash-derived filename, and registers unmatched/mismatched historical lineage explicitly rather than fabricating it.
+- Historical backfill is resumable by ledger state rather than by large Script Properties: subsequent invocations skip already registered physical file IDs and continue only with unledgered shards.
+- Adds `auditQboPayloadArtifactReconciliation()` to reconcile physical shard inventory, `06` rows, and `05` source-level `ShardCount`/`PayloadCount` totals and to surface duplicate, missing, orphan, non-exact, or aggregate-mismatch conditions.
+- No Native CDC, Webhook, FULL_EXPORT, or State Application cycles are resumed by this release.
+
+
+## v1.5.98 — Historical Payload Artifact Source-Lineage Reconciliation
+- Recognizes module 102 historical reconstruction shards (`HIST_PAYLOAD|...` / `HISTWU|...`) as exactly source-reconciled when their embedded `sourceId` matches authoritative `01_Sources`, even when no `05_Forward_Ingestion_Control` row exists.
+- Adds `HISTORICAL_SOURCE_EXACT_NO_05` lineage status. This is an exact historical source relationship, not an orphan and not a synthetic 05 relationship.
+- Adds `reconcileQboHistoricalPayloadArtifactSourceLineage()` to upgrade previously inventoried `ORPHAN_NO_05_SOURCE` rows only after re-reading the immutable shard, revalidating SHA-256/filename, exact embedded lineage, and exact 01 source identity.
+- Does not mutate Change Payload files, `01_Sources`, or `05_Forward_Ingestion_Control`.
+- Reconciliation audit accepts both forward `EXACT_RECONCILED` and historical `HISTORICAL_SOURCE_EXACT_NO_05` as exact lineage classes.
+
+## v1.5.99 — Self-Continuing Payload Artifact Historical Backfill
+- `runQboPayloadArtifactHistoricalBackfill()` now starts a single self-continuing bounded worker chain. When the 225-second worker budget is reached, exactly one one-time continuation trigger is scheduled after a short delay.
+- `06_Payload_Artifacts` remains the durable resume authority; no per-file or per-cycle Script Properties checkpoint is introduced. Each continuation re-enumerates metadata and skips already-ledgered physical file IDs before opening unledgered shard content.
+- Completion is now governed by actual Drive iterator exhaustion (EOF). A runtime-truncated pass can no longer report a misleading `remainingEstimate=1`; `remainingEstimate` is null until EOF is proven.
+- Diagnostic summary now records `IteratorExhausted` and `ContinuationScheduled`. `FolderShardCount` is the number of governed shard files encountered by that attempt and is authoritative as the complete physical count only when `IteratorExhausted=true`.
+- Continuation trigger management is short-lock scoped and deduplicated; long shard processing never holds the ScriptLock. On successful EOF completion, continuation triggers are removed.
+- Adds `cancelQboPayloadArtifactHistoricalBackfillContinuation()` as an explicit stop control. Payload files and `05_Forward_Ingestion_Control` remain read-only throughout historical backfill.
+- Paused Native CDC, Webhook, FULL_EXPORT ingestion and State Application are not resumed by this release.
+
+
+## v1.5.100 — Backfill summary schema migration
+- Repairs the v1.5.99 runtime schema mismatch on populated `106_Payload_Artifact_Backfill_Summary`.
+- Performs a fail-closed, append-only migration only when the existing 12-column v1.5.98 summary header matches exactly.
+- Appends `IteratorExhausted` and `ContinuationScheduled`; existing summary rows and evidence are preserved unchanged.
+- Self-continuation behavior and EOF-only completion semantics from v1.5.99 are unchanged.

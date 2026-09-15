@@ -454,6 +454,18 @@ function qboNativeCdcFinalizeCycle_(workerId, cycleId) {
   const committedManifestFile = qboNativeCdcWriteManifest_(completed);
   console.log('[NATIVE CDC PROD] | CYCLE COMPLETE | cycle=' + completed.cycleId + ' | entities=' + completed.completedEntityCount + ' | watermark=' + completed.committedWatermark);
 
+  // v1.5.74: entity metadata/attempt counters are transient orchestration state,
+  // not durable history. The committed manifest is now the durable cycle record.
+  // Cleanup is deliberately best-effort because the acquisition watermark and
+  // manifest are already committed; a cleanup failure must never reopen or mark
+  // the completed CDC cycle as failed.
+  try {
+    const cleanupResult = qboNativeCdcCleanupCommittedCycleTransientProperties_(completed.cycleId, committedManifestFile.getId(), {automatic:true});
+    console.log('[NATIVE CDC PROD] | TRANSIENT PROPERTY CLEANUP | ' + JSON.stringify(cleanupResult));
+  } catch (cleanupError) {
+    console.error('[NATIVE CDC PROD] | TRANSIENT PROPERTY CLEANUP WARNING | cycle=' + completed.cycleId + ' | ' + (cleanupError && cleanupError.message ? cleanupError.message : cleanupError));
+  }
+
   // Registration is a post-commit handoff. The acquisition watermark is already
   // authoritative at this point. Persist a durable pending handoff before the
   // registration attempt so a transient Sheet/Drive failure can be retried by

@@ -1,7 +1,7 @@
 /** ============================================================================
  * Application : 50 QBO Import Hub Standalone
  * Module      : 101_QBO_ChangePayloadPersistence.js
- * Version     : 1.5.55
+ * Version     : 1.5.97
  * Purpose     : Immutable, idempotent persistence of normalized Change Payload
  *               observations into governed Change Evidence/Change Payloads.
  *
@@ -71,7 +71,9 @@ function qboPersistChangePayloadShard_(payloads, metadata) {
     const existingStable = qboCanonicalStableStringify_(parsed.stableBody || {});
     const existingHash = qboStateCaptureAuditSha256_(existingStable);
     if (existingHash !== shardHash) throw new Error('CHANGE_PAYLOAD_PERSISTENCE_HASH_MISMATCH file=' + fileName);
-    return {created:false, reconciled:true, fileId:file.getId(), fileName:fileName, shardHash:shardHash, observationCount:payloads.length};
+    const reconciledResult = {created:false, reconciled:true, fileId:file.getId(), fileName:fileName, shardHash:shardHash, observationCount:payloads.length};
+    qboPayloadArtifactRegisterFromPersistence_(reconciledResult, payloads, metadata);
+    return reconciledResult;
   }
 
   const envelope = {
@@ -82,7 +84,9 @@ function qboPersistChangePayloadShard_(payloads, metadata) {
     stableBody: stableBody
   };
   const file = folder.createFile(fileName, JSON.stringify(envelope, null, 2), MimeType.PLAIN_TEXT);
-  return {created:true, reconciled:false, fileId:file.getId(), fileName:fileName, shardHash:shardHash, observationCount:payloads.length};
+  const createdResult = {created:true, reconciled:false, fileId:file.getId(), fileName:fileName, shardHash:shardHash, observationCount:payloads.length};
+  qboPayloadArtifactRegisterFromPersistence_(createdResult, payloads, metadata);
+  return createdResult;
 }
 
 function testQboChangePayloadPersistenceReadiness() {

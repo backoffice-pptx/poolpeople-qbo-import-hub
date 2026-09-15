@@ -1,7 +1,7 @@
 /** ============================================================================
  * Application : 50 QBO Import Hub Standalone
  * Module      : 104_QBO_NativeCdcForwardIngestion.js
- * Version     : 1.5.65
+ * Version     : 1.5.97
  * Purpose     : Production Native CDC forward ingestion: committed-cycle
  *               registration, independent dispatch, and normalization into
  *               immutable Change Payload shards using the shared control ledger.
@@ -9,7 +9,7 @@
  */
 
 const QBO_NATIVE_CDC_FORWARD_INGESTION_ = Object.freeze({
-  VERSION: 'QBO_NATIVE_CDC_FORWARD_INGESTION_V3_REGISTERED_AT_GUARD',
+  VERSION: 'QBO_NATIVE_CDC_FORWARD_INGESTION_V4_MAINTENANCE_PAUSE',
   SOURCE_TYPE: 'NATIVE_CDC',
   BATCH_SIZE: 100,
   WORKER_RUNTIME_BUDGET_MS: 210000,
@@ -44,6 +44,23 @@ function testQboNativeCdcForwardIngestionReadiness() {
   };
   if (!result.ready) throw new Error('NATIVE_CDC_FORWARD_INGESTION_NOT_READY ' + JSON.stringify(result));
   console.log('[NATIVE CDC INGESTION] | READY | ' + JSON.stringify(result));
+  return result;
+}
+
+function pauseQboNativeCdcIngestion() {
+  const before = listQboNativeCdcIngestionDispatcher();
+  removeQboNativeCdcIngestionDispatcher();
+  const after = listQboNativeCdcIngestionDispatcher();
+  const result = {pipeline:'NATIVE_CDC', paused:true, removedTriggerCount:before.length, activeTriggerCount:after.length};
+  console.log('[NATIVE CDC INGESTION] | PAUSED | ' + JSON.stringify(result));
+  return result;
+}
+
+function resumeQboNativeCdcIngestion() {
+  installQboNativeCdcIngestionDispatcher();
+  const after = listQboNativeCdcIngestionDispatcher();
+  const result = {pipeline:'NATIVE_CDC', paused:false, activeTriggerCount:after.length};
+  console.log('[NATIVE CDC INGESTION] | RESUMED | ' + JSON.stringify(result));
   return result;
 }
 
@@ -456,6 +473,7 @@ function qboNativeCdcIngestClaimedSource_(source, workerId) {
     ingestionRunId: 'FORWARD_NATIVE_CDC|' + String(source.SourceRunId || ''),
     workUnitId: workUnitId,
     sourceId: sourceId,
+    sourceRunId: String(source.SourceRunId || ''),
     sourceType: QBO_NATIVE_CDC_FORWARD_INGESTION_.SOURCE_TYPE,
     sourceIndex: '',
     recordCursorStart: cursor,

@@ -1,7 +1,7 @@
 /** ============================================================================
  * Application : 50 QBO Import Hub Standalone
  * Module      : 107_QBO_WebhookForwardIngestion.js
- * Version     : 1.5.70
+ * Version     : 1.5.97
  * Purpose     : Production Webhook forward ingestion from immutable receipt
  *               evidence into shared normalized Change Payloads.
  *
@@ -23,7 +23,7 @@
  */
 
 const QBO_WEBHOOK_FORWARD_INGESTION_ = Object.freeze({
-  VERSION: 'QBO_WEBHOOK_FORWARD_INGESTION_V2_HISTORICAL_CLAIM_ISOLATION',
+  VERSION: 'QBO_WEBHOOK_FORWARD_INGESTION_V3_MAINTENANCE_PAUSE',
   SOURCE_TYPE: 'WEBHOOK',
   SOURCE_EXPECTED_VALUE: 'QBO_WEBHOOK',
   CUTOVER_PROPERTY_KEY: 'QBO_WEBHOOK_FORWARD_INGESTION_CUTOVER_V1',
@@ -140,6 +140,23 @@ function listQboWebhookForwardIngestionStatus() {
     blockedCount: Number(byStatus[QBO_FORWARD_INGESTION_CONTROL_.STATUS_BLOCKED] || 0)
   };
   console.log('[WEBHOOK INGESTION] | STATUS | ' + JSON.stringify(result));
+  return result;
+}
+
+function pauseQboWebhookIngestion() {
+  const before = listQboWebhookIngestionDispatcher();
+  removeQboWebhookIngestionDispatcher();
+  const after = listQboWebhookIngestionDispatcher();
+  const result = {pipeline:'WEBHOOK', paused:true, removedTriggerCount:before.length, activeTriggerCount:after.length};
+  console.log('[WEBHOOK INGESTION] | PAUSED | ' + JSON.stringify(result));
+  return result;
+}
+
+function resumeQboWebhookIngestion() {
+  installQboWebhookIngestionDispatcher();
+  const after = listQboWebhookIngestionDispatcher();
+  const result = {pipeline:'WEBHOOK', paused:false, activeTriggerCount:after.length};
+  console.log('[WEBHOOK INGESTION] | RESUMED | ' + JSON.stringify(result));
   return result;
 }
 
@@ -376,6 +393,7 @@ function qboWebhookForwardIngestClaimedSource_(control, workerId) {
     ingestionRunId: 'FORWARD_WEBHOOK|' + validation.receiptId,
     workUnitId: workUnitId,
     sourceId: sourceId,
+    sourceRunId: String(control.SourceRunId || validation.receiptId || ''),
     sourceType: QBO_WEBHOOK_FORWARD_INGESTION_.SOURCE_TYPE,
     sourceIndex: '',
     recordCursorStart: cursor,
