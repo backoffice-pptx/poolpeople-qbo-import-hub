@@ -22,9 +22,14 @@
  *   row has not yet been independently proven. Therefore this module preserves
  *   the broader eligible GL evidence population (allowed sales transaction
  *   types, nonzero data rows, excluding Undeposited Funds and sales-tax-payable
- *   accounts) and labels it as supporting recognition evidence. Downstream code
- *   must not treat it as an exact Sales-by-Tax-Name clone until that predicate
- *   is separately validated and promoted.
+ *   accounts) as the governed cash-basis recognition evidence population. It is
+ *   not required to be an exact Sales-by-Tax-Name clone for the forward filing
+ *   architecture, and Sales by Tax Name is not a continuing pre-filing evidence
+ *   dependency. Downstream reconciliation must combine this recognition evidence
+ *   with the exact Taxable Sales Detail snapshot to reconstruct Gross Sales,
+ *   Non-Taxable Sales, Taxable Sales, and Tax Due and reconcile those totals to
+ *   the exact bound QBO Sales Tax Liability snapshot. A raw sum of Amount is not
+ *   a standalone filing-basis total or Liability reconciliation control.
  *
  * Script Property:
  *   QBO_SALES_TAX_RECOGNITION_DATA_SPREADSHEET_ID
@@ -221,7 +226,7 @@ function exportQboSalesTaxRecognitionForMonth(monthKey) {
   );
 }
 
-function exportQboSalesTaxRecognitionForPeriod(startDate, endDate) {
+function exportQboSalesTaxRecognitionForPeriod(startDate, endDate, expectedGlExtractRunId) {
   qboStrValidatePeriod_(startDate, endDate);
 
   const periodKey = startDate.slice(0, 7).replace('-', '');
@@ -230,7 +235,7 @@ function exportQboSalesTaxRecognitionForPeriod(startDate, endDate) {
   const outputSs = qboStrGetWorkbook_();
   qboStrEnsureWorkbook_(outputSs);
 
-  const source = qboStrReadCapturedGlPeriod_(startDate, endDate);
+  const source = qboStrReadCapturedGlPeriod_(startDate, endDate, expectedGlExtractRunId);
   qboStrAssertRequestedPeriod_(periodKey, startDate, endDate, source);
 
   safeLog_(
@@ -365,7 +370,7 @@ function exportQboSalesTaxRecognitionForPeriod(startDate, endDate) {
  * Reads exactly one captured GL reporting period from the existing governed
  * General Ledger workbook. This function never refreshes QBO.
  */
-function qboStrReadCapturedGlPeriod_(startDate, endDate) {
+function qboStrReadCapturedGlPeriod_(startDate, endDate, expectedExtractRunId) {
   const ss = getQboGeneralLedgerReportSpreadsheet_();
   const sheet = ss.getSheetByName(QBO_GENERAL_LEDGER_REPORT.DATA_SHEET);
   if (!sheet || sheet.getLastRow() < 2) {
@@ -416,15 +421,26 @@ function qboStrReadCapturedGlPeriod_(startDate, endDate) {
     if (id) runIds[id] = true;
   });
   const runIdList = Object.keys(runIds);
-  if (runIdList.length !== 1) {
-    throw new Error(
-      'Captured GL period ' + startDate + '..' + endDate +
-      ' contains ' + runIdList.length +
-      ' ExtractRunIds; expected exactly one current captured run.'
-    );
+  expectedExtractRunId = String(expectedExtractRunId || '').trim();
+  let extractRunId;
+  if (expectedExtractRunId) {
+    if (!runIds[expectedExtractRunId]) {
+      throw new Error(
+        'Captured GL period ' + startDate + '..' + endDate +
+        ' does not contain requested ExtractRunId ' + expectedExtractRunId + '.'
+      );
+    }
+    extractRunId = expectedExtractRunId;
+  } else {
+    if (runIdList.length !== 1) {
+      throw new Error(
+        'Captured GL period ' + startDate + '..' + endDate +
+        ' contains ' + runIdList.length +
+        ' ExtractRunIds; expected exactly one current captured run.'
+      );
+    }
+    extractRunId = runIdList[0];
   }
-
-  const extractRunId = runIdList[0];
   const runRows = matched.filter(function(row) {
     return String(row[idx.ExtractRunId] || '').trim() === extractRunId;
   });

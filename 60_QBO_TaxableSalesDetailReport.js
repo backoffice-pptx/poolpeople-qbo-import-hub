@@ -12,6 +12,12 @@
  *     inventing a per-line tax allocation. Exact tax allocation is a separate
  *     reconciliation concern because diagnostics proved simple proportional
  *     rounding can differ from QBO by residual pennies.
+ *   - FORWARD SALES-TAX CONTRACT: this dataset is the taxable/tax-detail
+ *     evidence population paired with QBO Sales Tax Recognition. The governed
+ *     reconstruction combines both datasets to derive Gross Sales, Non-Taxable
+ *     Sales, Taxable Sales, and Tax Due, then reconciles those totals to the
+ *     exact bound QBO Sales Tax Liability snapshot. Do not use a raw sum of
+ *     Recognized_Taxable_Amount as a standalone Liability reconciliation.
  *
  * Script Property:
  *   QBO_TAXABLE_SALES_DETAIL_DATA_SPREADSHEET_ID

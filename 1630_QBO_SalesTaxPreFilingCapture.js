@@ -135,9 +135,33 @@ function processSalesTaxPreFilingCaptureRequest(controlSpreadsheetId, requestId)
   try {
     const periodStart = qboPreFilingNormalizeDate_(request.Period_Start);
     const periodEnd = qboPreFilingNormalizeDate_(request.Period_End);
-    const gl = exportQboGeneralLedgerForPeriod(periodStart, periodEnd);
-    const taxableSalesDetail = exportQboTaxableSalesDetailForPeriod(periodStart, periodEnd);
-    const salesTaxRecognition = exportQboSalesTaxRecognitionForPeriod(periodStart, periodEnd);
+
+    let gl;
+    if (String(request.GL_ExtractRunId || '').trim() && String(request.GL_SnapshotFileId || '').trim()) {
+      gl = {extractRunId:String(request.GL_ExtractRunId).trim(),snapshotFileId:String(request.GL_SnapshotFileId).trim()};
+      safeLog_('[PREFILING QBO CAPTURE] | RESUME | GL checkpoint=' + gl.extractRunId);
+    } else {
+      gl = exportQboGeneralLedgerForPeriod(periodStart, periodEnd);
+      request.GL_ExtractRunId = gl.extractRunId;
+      request.GL_SnapshotFileId = gl.snapshotFileId;
+      request.Last_Updated_At = new Date();
+      state.rows[index] = request; qboPreFilingWriteLedger_(sheet, state.rows);
+    }
+
+    let taxableSalesDetail;
+    if (String(request.Taxable_Sales_Detail_Snapshot_Run_ID || '').trim() && String(request.Taxable_Sales_Detail_Workbook_File_ID || '').trim()) {
+      taxableSalesDetail = {runId:String(request.Taxable_Sales_Detail_Snapshot_Run_ID).trim(),spreadsheetId:String(request.Taxable_Sales_Detail_Workbook_File_ID).trim(),snapshotSequence:request.Taxable_Sales_Detail_Snapshot_Sequence};
+      safeLog_('[PREFILING QBO CAPTURE] | RESUME | TAXABLE SALES DETAIL checkpoint=' + taxableSalesDetail.runId);
+    } else {
+      taxableSalesDetail = exportQboTaxableSalesDetailForPeriod(periodStart, periodEnd);
+      request.Taxable_Sales_Detail_Workbook_File_ID = taxableSalesDetail.spreadsheetId;
+      request.Taxable_Sales_Detail_Snapshot_Run_ID = taxableSalesDetail.runId;
+      request.Taxable_Sales_Detail_Snapshot_Sequence = taxableSalesDetail.snapshotSequence;
+      request.Last_Updated_At = new Date();
+      state.rows[index] = request; qboPreFilingWriteLedger_(sheet, state.rows);
+    }
+
+    const salesTaxRecognition = exportQboSalesTaxRecognitionForPeriod(periodStart, periodEnd, gl.extractRunId);
 
     if (String(salesTaxRecognition.sourceGlExtractRunId || '') !== String(gl.extractRunId || '')) {
       throw new Error('PREFILING_QBO_CAPTURE_GL_LINEAGE_MISMATCH');
@@ -410,3 +434,33 @@ function qboPreFilingEvidencePeriodKey_(periodStart, requestPeriodKey){
  return m[1]+m[2];
 }
 function qboPreFilingAssertSnapshotExists_(ss,sn,pk,rid,seq,label){rid=String(rid||'').trim();seq=Number(seq);if(!rid||!seq)throw new Error(label+'_BOUND_SNAPSHOT_IDENTITY_MISSING');const sh=ss.getSheetByName(sn);if(!sh||sh.getLastRow()<2)throw new Error(label+'_SNAPSHOT_SHEET_EMPTY');const v=sh.getDataRange().getValues(),h=v[0].map(x=>String(x||'').trim()),p=h.indexOf('Period_Key'),q=h.indexOf('Snapshot_Sequence'),r=h.indexOf('Snapshot_Run_ID');if(p<0||q<0||r<0)throw new Error(label+'_SNAPSHOT_CONTRACT_INVALID');if(!v.slice(1).some(x=>String(x[p]||'').trim()===String(pk||'').trim()&&Number(x[q])===seq&&String(x[r]||'').trim()===rid))throw new Error(label+'_BOUND_SNAPSHOT_NOT_FOUND');return true;}
+
+/**
+ * One-time governed recovery for the Sep 18 failed August capture that completed
+ * GL and Taxable Sales Detail before checkpoint persistence existed. It binds the
+ * exact immutable artifacts from that failed execution, then delegates to the
+ * normal FAILED-request retry path. Refuses any other request/state.
+ */
+function recoverSep18AugustPreFilingCaptureFromCompletedStages() {
+  const requestId='cd45bd6d-fa6a-4a0a-80f9-898b17e53b5a';
+  const controlAssetKey='SALES_TAX_RECONCILIATION_CONTROL';
+  const asset=DataPlatform05.getConfiguredAssetReference(controlAssetKey,'Spreadsheet','PROD');
+  const ss=SpreadsheetApp.openById(String(asset.ResourceIdentifier||'').trim());
+  const sheet=ss.getSheetByName(QBO_PREFILING_CAPTURE.SHEET_NAME);
+  const state=qboPreFilingReadLedger_(sheet);
+  const index=qboPreFilingFindRequest_(state.rows,requestId);
+  const request=state.rows[index];
+  if(String(request.Request_Status||'').trim()!=='FAILED') throw new Error('PREFILING_RECOVERY_REQUEST_NOT_FAILED');
+  if(String(request.PreFiling_Run_ID||'').trim()!=='60cbf469-b91e-4db1-b3e0-219c99e018be') throw new Error('PREFILING_RECOVERY_RUN_MISMATCH');
+  if(String(request.Period_Key||'').trim()!=='2608') throw new Error('PREFILING_RECOVERY_PERIOD_MISMATCH');
+  if(String(request.GL_ExtractRunId||'').trim()||String(request.Taxable_Sales_Detail_Snapshot_Run_ID||'').trim()) throw new Error('PREFILING_RECOVERY_CHECKPOINT_ALREADY_PRESENT');
+  request.GL_ExtractRunId='990f81e7-e652-4249-b37a-fc57036a835d';
+  request.GL_SnapshotFileId='1UNMPFZ6VAIe1uzkIOeIqDSYG-YnoGeW4viS7nwsvR1Q';
+  request.Taxable_Sales_Detail_Workbook_File_ID='1va3zAyLnNAD1Z-_Lmw8vm0ATEVZ4HEbAB3kIVY5zqg8';
+  request.Taxable_Sales_Detail_Snapshot_Run_ID='021db343-314f-4da2-b816-2b00c3da454b';
+  request.Taxable_Sales_Detail_Snapshot_Sequence=3;
+  request.Last_Updated_At=new Date();
+  state.rows[index]=request; qboPreFilingWriteLedger_(sheet,state.rows);
+  safeLog_('[PREFILING QBO CAPTURE] | RECOVERY CHECKPOINTS BOUND | request='+requestId);
+  return retryLatestFailedSalesTaxPreFilingCapture();
+}
