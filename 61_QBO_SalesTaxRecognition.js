@@ -204,10 +204,10 @@ function qboStrWorkbookHasCapturedData_(ss) {
 function exportQboSalesTaxRecognition() {
   const ss = qboStrGetWorkbook_();
   qboStrEnsureWorkbook_(ss);
-  const monthKey = qboStrReadControlValue_(ss, 'REPORT_MONTH');
+  const monthKey = qboStrReadDefaultReportMonth_(ss);
   if (!/^\d{4}-\d{2}$/.test(String(monthKey || '').trim())) {
     throw new Error(
-      '00_Controls REPORT_MONTH must be set to YYYY-MM before running exportQboSalesTaxRecognition().'
+      '00_Controls REPORT_MONTH (Default) must be set to YYYY-MM before running exportQboSalesTaxRecognition().'
     );
   }
   return exportQboSalesTaxRecognitionForMonth(String(monthKey).trim());
@@ -231,6 +231,7 @@ function exportQboSalesTaxRecognitionForPeriod(startDate, endDate) {
   qboStrEnsureWorkbook_(outputSs);
 
   const source = qboStrReadCapturedGlPeriod_(startDate, endDate);
+  qboStrAssertRequestedPeriod_(periodKey, startDate, endDate, source);
 
   safeLog_(
     '[SALES TAX RECOGNITION] | START | run=' + runId +
@@ -794,11 +795,11 @@ function qboStrEnsureControls_(ss) {
     qboStrRenderControls_(sheet, '', '', '', '', '', null, '', '');
     return;
   }
-  if (!Object.prototype.hasOwnProperty.call(existing, 'REPORT_MONTH')) {
+  if (!Object.prototype.hasOwnProperty.call(existing, 'REPORT_MONTH (Default)')) {
     const latest = String(existing['Latest Period Key'] || '').trim();
-    const reportMonth = /^\d{6}$/.test(latest)
+    const reportMonth = String(existing['REPORT_MONTH'] || '').trim() || (/^\d{6}$/.test(latest)
       ? latest.slice(0, 4) + '-' + latest.slice(4, 6)
-      : '';
+      : '');
     qboStrRenderControls_(
       sheet,
       reportMonth,
@@ -838,12 +839,14 @@ function qboStrRenderControls_(sheet, reportMonth, periodKey, sequence, runId, d
     ['Source', 'Captured App 50 QBO_GeneralLedger dataset'],
     ['Source refresh behavior', 'NOT REAL TIME; this module never calls GeneralLedger API'],
     ['Accounting Method', 'Cash'],
-    ['REPORT_MONTH', reportMonth],
+    ['REPORT_MONTH (Default)', reportMonth],
     ['Population status', 'SUPPORTING_EVIDENCE_NOT_YET_EXACT_SALES_BY_TAX_NAME_CLONE'],
     ['Included transaction types', 'Invoice; Sales Receipt; Credit Memo; Refund'],
     ['Excluded accounts', 'Undeposited Funds; Texas Comptroller / tax-payable'],
     ['Row Hash Version', QBO_SALES_TAX_RECOGNITION.ROW_HASH_VERSION],
     ['Latest Period Key', periodKey],
+    ['Latest Period Start', qboStrPeriodStart_(periodKey)],
+    ['Latest Period End', qboStrPeriodEnd_(periodKey)],
     ['Latest Snapshot Sequence', sequence],
     ['Latest Snapshot Run ID', runId],
     ['Latest Derived At', derivedAt],
@@ -864,8 +867,16 @@ function qboStrRenderControls_(sheet, reportMonth, periodKey, sequence, runId, d
 
 function qboStrWriteControls_(ss, periodKey, sequence, runId, derivedAt, source, rowCount, changeCount) {
   const sheet = ss.getSheetByName(QBO_SALES_TAX_RECOGNITION.CONTROL_SHEET);
-  const reportMonth = qboStrReadControlValue_(ss, 'REPORT_MONTH') || '';
+  const reportMonth = qboStrReadDefaultReportMonth_(ss) || '';
   qboStrRenderControls_(
     sheet, reportMonth, periodKey, sequence, runId, derivedAt, source, rowCount, changeCount
   );
 }
+
+
+function qboStrReadDefaultReportMonth_(ss){return qboStrReadControlValue_(ss,'REPORT_MONTH (Default)')||qboStrReadControlValue_(ss,'REPORT_MONTH')||'';}
+function qboStrPeriodStart_(p){p=String(p||'');return /^\d{6}$/.test(p)?p.slice(0,4)+'-'+p.slice(4,6)+'-01':'';}
+function qboStrPeriodEnd_(p){const s=qboStrPeriodStart_(p);if(!s)return '';const d=new Date(Date.UTC(Number(s.slice(0,4)),Number(s.slice(5,7)),0));return Utilities.formatDate(d,'UTC','yyyy-MM-dd');}
+function qboStrAssertRequestedPeriod_(periodKey,startDate,endDate,source){const expected=startDate.slice(0,7).replace('-','');if(periodKey!==expected)throw new Error('SalesTaxRecognition requested-period invariant failed: periodKey='+periodKey+' expected='+expected);if(qboStrDateText_(source.reportStartDate)!==startDate||qboStrDateText_(source.reportEndDate)!==endDate)throw new Error('SalesTaxRecognition requested-period invariant failed: source GL period '+qboStrDateText_(source.reportStartDate)+'..'+qboStrDateText_(source.reportEndDate)+' expected '+startDate+'..'+endDate);}
+function testQboSalesTaxRecognitionRequestedPeriodContract(){const checks=[];function ok(name,v){checks.push({name:name,passed:!!v});}ok('period start',qboStrPeriodStart_('202608')==='2026-08-01');ok('period end',qboStrPeriodEnd_('202608')==='2026-08-31');qboStrAssertRequestedPeriod_('202608','2026-08-01','2026-08-31',{reportStartDate:'2026-08-01',reportEndDate:'2026-08-31'});ok('matching GL period accepted',true);let blocked=false;try{qboStrAssertRequestedPeriod_('202608','2026-08-01','2026-08-31',{reportStartDate:'2026-07-01',reportEndDate:'2026-07-31'});}catch(e){blocked=true;}ok('mismatched GL period blocked',blocked);const passed=checks.every(function(c){return c.passed;});const result={checkCount:checks.length,passed:passed,checks:checks};safeLog_('[SALES TAX RECOGNITION CONTRACT TEST] '+JSON.stringify(result));if(!passed)throw new Error('Sales Tax Recognition requested-period contract test failed.');return result;}
+function upgradeQboSalesTaxEvidenceControlMetadata(){const tsd=qboTsdGetWorkbook_();qboTsdEnsureWorkbook_(tsd);qboTsdEnsureControls_(tsd);const str=qboStrGetWorkbook_();qboStrEnsureWorkbook_(str);qboStrEnsureControls_(str);const result={taxableSalesDetailSpreadsheetId:tsd.getId(),salesTaxRecognitionSpreadsheetId:str.getId(),status:'SUCCESS'};safeLog_('[SALES TAX EVIDENCE CONTROL METADATA] '+JSON.stringify(result));return result;}

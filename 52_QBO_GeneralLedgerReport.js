@@ -40,6 +40,7 @@ const QBO_GENERAL_LEDGER_REPORT = Object.freeze({
   WORKBOOK_TITLE: 'QBO Export - General Ledger Report',
   DATA_SHEET: 'QBO_GeneralLedger',
   RUNS_SHEET: 'QBO_GeneralLedgerRuns',
+  CHANGES_SHEET: 'QBO_GeneralLedgerChanges',
   CONTROL_SHEET: '00_Control',
   ACCOUNTING_METHOD: 'Cash',
   MAX_WORKBOOK_CELLS: 8000000
@@ -92,6 +93,49 @@ const QBO_GENERAL_LEDGER_CONTROL_DEFAULTS = Object.freeze([
     '2021-12',
     'Last month to process when a new General Ledger historical backfill is started.'
   ])
+]);
+
+
+
+const QBO_GENERAL_LEDGER_CHANGE_MATCHER_VERSION = 'BUSINESS_MATCH_V2';
+const QBO_GENERAL_LEDGER_CHANGE_CLASSIFIER_VERSION = 'BUSINESS_STATE_V1';
+
+const QBO_GENERAL_LEDGER_CHANGE_HEADERS_V0513 = Object.freeze([
+  'ComparisonId','ComparedAt','ReportStartDate','ReportEndDate',
+  'PriorExtractRunId','CurrentExtractRunId','ChangeType','RowIdentity',
+  'Depth','RowType','GroupLabel','GroupId','SectionSummaryLabel',
+  'Date','TransactionType','TransactionId','Num','Name','NameId','MemoDescription','Split','SplitId',
+  'ChangedFields','PriorRowHash','CurrentRowHash','PriorAmount','CurrentAmount','AmountDelta',
+  'PriorBalance','CurrentBalance','PriorSnapshotRowNumber','CurrentSnapshotRowNumber',
+  'PriorSnapshotFileId','CurrentSnapshotFileId'
+]);
+
+const QBO_GENERAL_LEDGER_CHANGE_HEADERS_V0514 = Object.freeze([
+  'ComparisonId','MatcherVersion','ComparedAt','ReportStartDate','ReportEndDate',
+  'PriorExtractRunId','CurrentExtractRunId','ChangeType','RowIdentity',
+  'Depth','RowType','GroupLabel','GroupId','SectionSummaryLabel',
+  'Date','TransactionType','TransactionId','Num','Name','NameId','MemoDescription','Split','SplitId',
+  'ChangedFields','PriorRowHash','CurrentRowHash','PriorAmount','CurrentAmount','AmountDelta',
+  'PriorBalance','CurrentBalance','PriorSnapshotRowNumber','CurrentSnapshotRowNumber',
+  'PriorSnapshotFileId','CurrentSnapshotFileId'
+]);
+
+const QBO_GENERAL_LEDGER_CHANGE_HEADERS = Object.freeze([
+  'ComparisonId','MatcherVersion','ClassifierVersion','ComparedAt','ReportStartDate','ReportEndDate',
+  'PriorExtractRunId','CurrentExtractRunId','ChangeType','BusinessStateChanged','ChangeClass','RowIdentity',
+  'Depth','RowType','GroupLabel','GroupId','SectionSummaryLabel',
+  'Date','TransactionType','TransactionId','Num','Name','NameId','MemoDescription','Split','SplitId',
+  'ChangedFields','BusinessChangedFields','PriorRowHash','CurrentRowHash',
+  'PriorAmount','CurrentAmount','AmountDelta','BusinessAmountDelta',
+  'PriorBalance','CurrentBalance','PriorSnapshotRowNumber','CurrentSnapshotRowNumber',
+  'PriorSnapshotFileId','CurrentSnapshotFileId'
+]);
+
+const QBO_GENERAL_LEDGER_LEGACY_CHANGE_HEADERS_V0511 = Object.freeze([
+  'ComparisonId','ComparedAt','ReportStartDate','ReportEndDate',
+  'PriorExtractRunId','CurrentExtractRunId','ChangeType','RowIdentity',
+  'PriorRowHash','CurrentRowHash','PriorAmount','CurrentAmount','AmountDelta',
+  'PriorRowJSON','CurrentRowJSON'
 ]);
 
 const QBO_GENERAL_LEDGER_RUN_HEADERS = Object.freeze([
@@ -188,6 +232,7 @@ function exportQboGeneralLedgerForPeriod(startDate, endDate) {
   validateQboGeneralLedgerPeriod_(startDate, endDate);
   const spreadsheet = getQboGeneralLedgerReportSpreadsheet_();
   const cfg = getConfig_();
+  const priorRun = findLatestQboGeneralLedgerRunForPeriod_(spreadsheet, startDate, endDate);
   const runId = Utilities.getUuid();
   const extractedAt = new Date();
   const query = [
@@ -253,6 +298,21 @@ function exportQboGeneralLedgerForPeriod(startDate, endDate) {
     snapshot.fileName
   ]);
 
+  let comparison = null;
+  if (priorRun && priorRun.ExtractRunId) {
+    comparison = compareQboGeneralLedgerRunSnapshots_(
+      spreadsheet,
+      priorRun,
+      {
+        ExtractRunId: runId,
+        ReportStartDate: valueOrBlank_(header.StartPeriod) || startDate,
+        ReportEndDate: valueOrBlank_(header.EndPeriod) || endDate,
+        SnapshotFileId: snapshot.fileId
+      },
+      true
+    );
+  }
+
   const summary = {
     extractRunId: runId,
     reportName: valueOrBlank_(header.ReportName),
@@ -266,7 +326,9 @@ function exportQboGeneralLedgerForPeriod(startDate, endDate) {
     snapshotFileName: snapshot.fileName,
     storageAction: storageResult.action,
     replacedRowCount: storageResult.replacedRowCount,
-    historicalPeriodCount: storageResult.periodCount
+    historicalPeriodCount: storageResult.periodCount,
+    priorExtractRunId: priorRun ? priorRun.ExtractRunId : '',
+    comparison: comparison
   };
 
   safeLog_('[GL REPORT] | COMPLETE | ' + JSON.stringify(summary));
@@ -614,7 +676,8 @@ function ensureQboGeneralLedgerWorkbookSheets_(spreadsheet) {
   [
     QBO_GENERAL_LEDGER_REPORT.CONTROL_SHEET,
     QBO_GENERAL_LEDGER_REPORT.DATA_SHEET,
-    QBO_GENERAL_LEDGER_REPORT.RUNS_SHEET
+    QBO_GENERAL_LEDGER_REPORT.RUNS_SHEET,
+    QBO_GENERAL_LEDGER_REPORT.CHANGES_SHEET
   ].forEach(function(sheetName) {
     if (!spreadsheet.getSheetByName(sheetName)) {
       spreadsheet.insertSheet(sheetName);
@@ -719,15 +782,18 @@ function upsertQboGeneralLedgerPeriod_(spreadsheet, rows, startDate, endDate) {
   validateQboGeneralLedgerCapacity_(spreadsheet, sheet, netAdditionalRows, headers.length);
 
   if (replacementRows > 0) {
-    // Google Sheets does not allow deleting every non-frozen row in a sheet.
-    // A single-period workbook can legitimately match that condition on rerun,
-    // so preserve one spare non-frozen row before removing the old period block.
+    // A period can contain multiple physical blocks when legacy display-format
+    // identity failed to replace semantically identical Date/text values. Delete
+    // every matching block bottom-up so row numbers remain stable.
     const frozenRows = sheet.getFrozenRows();
     const remainingNonFrozenRows = sheet.getMaxRows() - frozenRows - replacementRows;
     if (remainingNonFrozenRows < 1) {
       sheet.insertRowsAfter(sheet.getMaxRows(), 1 - remainingNonFrozenRows);
     }
-    sheet.deleteRows(existing.startRow, replacementRows);
+    existing.blocks.slice().sort(function(a, b) { return b.startRow - a.startRow; })
+      .forEach(function(block) {
+        sheet.deleteRows(block.startRow, block.rowCount);
+      });
   }
 
   const appendStartRow = sheet.getLastRow() + 1;
@@ -814,36 +880,46 @@ function ensureQboGeneralLedgerHeader_(sheet, headers) {
 function findQboGeneralLedgerPeriodBlock_(sheet, startDate, endDate) {
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) {
-    return { startRow: 0, rowCount: 0 };
+    return { startRow: 0, rowCount: 0, blocks: [] };
   }
 
-  // Read only ReportStartDate/ReportEndDate. Avoid loading large JSON columns.
-  const periodValues = sheet.getRange(2, 5, lastRow - 1, 2).getDisplayValues();
-  let first = -1;
-  let last = -1;
-  let gapDetected = false;
+  // Period identity is semantic, not display-format dependent. getValues() may
+  // return Date objects while older rows may contain ISO text; normalize both.
+  const periodValues = sheet.getRange(2, 5, lastRow - 1, 2).getValues();
+  const blocks = [];
+  let blockStart = -1;
+  let blockCount = 0;
+  let total = 0;
 
   for (let i = 0; i < periodValues.length; i++) {
-    const matches = periodValues[i][0] === startDate && periodValues[i][1] === endDate;
+    const matches = qboGeneralLedgerDateText_(periodValues[i][0]) === startDate &&
+      qboGeneralLedgerDateText_(periodValues[i][1]) === endDate;
     if (matches) {
-      if (first < 0) first = i;
-      if (last >= 0 && i !== last + 1) gapDetected = true;
-      last = i;
+      total++;
+      if (blockStart < 0) {
+        blockStart = i + 2;
+        blockCount = 1;
+      } else if (blockStart + blockCount === i + 2) {
+        blockCount++;
+      } else {
+        blocks.push({ startRow: blockStart, rowCount: blockCount });
+        blockStart = i + 2;
+        blockCount = 1;
+      }
+    } else if (blockStart >= 0) {
+      blocks.push({ startRow: blockStart, rowCount: blockCount });
+      blockStart = -1;
+      blockCount = 0;
     }
   }
+  if (blockStart >= 0) blocks.push({ startRow: blockStart, rowCount: blockCount });
 
-  if (first < 0) {
-    return { startRow: 0, rowCount: 0 };
-  }
-  if (gapDetected) {
-    throw new Error(
-      'General Ledger period ' + startDate + '..' + endDate +
-      ' is not stored as one contiguous block. Refusing unsafe replacement.'
-    );
-  }
-  return { startRow: first + 2, rowCount: last - first + 1 };
+  return {
+    startRow: blocks.length ? blocks[0].startRow : 0,
+    rowCount: total,
+    blocks: blocks
+  };
 }
-
 function getQboGeneralLedgerHistoryStatus_(spreadsheet, sheet) {
   const lastRow = sheet.getLastRow();
   const periods = {};
@@ -896,6 +972,476 @@ function getQboGeneralLedgerAllocatedCellCount_(spreadsheet) {
   return spreadsheet.getSheets().reduce(function(total, sheet) {
     return total + sheet.getMaxRows() * sheet.getMaxColumns();
   }, 0);
+}
+
+
+function qboGeneralLedgerDateText_(value) {
+  if (value === null || value === undefined || value === '') return '';
+  if (Object.prototype.toString.call(value) === '[object Date]' && !isNaN(value.getTime())) {
+    return Utilities.formatDate(value, Session.getScriptTimeZone() || 'America/Chicago', 'yyyy-MM-dd');
+  }
+  const text = String(value).trim();
+  const iso = /^(\d{4})-(\d{2})-(\d{2})(?:$|[T\s])/.exec(text);
+  return iso ? iso[1] + '-' + iso[2] + '-' + iso[3] : text;
+}
+
+function findLatestQboGeneralLedgerRunForPeriod_(spreadsheet, startDate, endDate) {
+  const sheet = spreadsheet.getSheetByName(QBO_GENERAL_LEDGER_REPORT.RUNS_SHEET);
+  if (!sheet || sheet.getLastRow() < 2) return null;
+  const values = sheet.getDataRange().getValues();
+  const headers = values[0].map(function(v) { return String(v || '').trim(); });
+  const idx = {};
+  QBO_GENERAL_LEDGER_RUN_HEADERS.forEach(function(h) { idx[h] = headers.indexOf(h); });
+  for (let i = values.length - 1; i >= 1; i--) {
+    const row = values[i];
+    if (qboGeneralLedgerDateText_(row[idx.ReportStartDate]) === startDate &&
+        qboGeneralLedgerDateText_(row[idx.ReportEndDate]) === endDate) {
+      const out = {};
+      QBO_GENERAL_LEDGER_RUN_HEADERS.forEach(function(h) { out[h] = row[idx[h]]; });
+      return out;
+    }
+  }
+  return null;
+}
+
+function qboGeneralLedgerSnapshotRows_(snapshotFileId, extractRunId, startDate, endDate) {
+  const ss = SpreadsheetApp.openById(String(snapshotFileId || '').trim());
+  const sheet = ss.getSheetByName(QBO_GENERAL_LEDGER_REPORT.DATA_SHEET);
+  if (!sheet || sheet.getLastRow() < 2) return [];
+  const values = sheet.getDataRange().getValues();
+  const headers = values[0].map(function(v) { return String(v || '').trim(); });
+  const runIdx = headers.indexOf('ExtractRunId');
+  const startIdx = headers.indexOf('ReportStartDate');
+  const endIdx = headers.indexOf('ReportEndDate');
+  if (runIdx < 0 || startIdx < 0 || endIdx < 0) throw new Error('GL snapshot schema is incomplete.');
+  const rows = [];
+  for (let i = 1; i < values.length; i++) {
+    const row = values[i];
+    if (String(row[runIdx] || '').trim() === String(extractRunId || '').trim() &&
+        qboGeneralLedgerDateText_(row[startIdx]) === startDate &&
+        qboGeneralLedgerDateText_(row[endIdx]) === endDate) {
+      row.__snapshotRowNumber = i + 1;
+      rows.push(row);
+    }
+  }
+  return rows;
+}
+
+function qboGeneralLedgerStableValue_(value) {
+  if (Object.prototype.toString.call(value) === '[object Date]' && !isNaN(value.getTime())) {
+    return Utilities.formatDate(value, Session.getScriptTimeZone() || 'America/Chicago', "yyyy-MM-dd'T'HH:mm:ss.SSS");
+  }
+  return value === null || value === undefined ? '' : String(value);
+}
+
+function qboGeneralLedgerHash_(text) {
+  return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(text), Utilities.Charset.UTF_8)
+    .map(function(b) { const v = b < 0 ? b + 256 : b; return ('0' + v.toString(16)).slice(-2); })
+    .join('');
+}
+
+function qboGeneralLedgerRowIdentity_(row) {
+  // Exclude run metadata and mutable financial/content values. The remaining
+  // structural/business coordinates identify the logical report row.
+  const positions = [6,7,8,9,10,13,14,15,16,17,18,20,21];
+  return qboGeneralLedgerHash_(positions.map(function(i) {
+    return qboGeneralLedgerStableValue_(row[i]);
+  }).join('\u001f'));
+}
+
+function qboGeneralLedgerRowHash_(row) {
+  // Ignore only run-specific metadata. Everything else participates in change detection.
+  return qboGeneralLedgerHash_(row.slice(2).map(qboGeneralLedgerStableValue_).join('\u001f'));
+}
+
+function qboGeneralLedgerRowsByIdentity_(rows) {
+  const groups = {};
+  rows.forEach(function(row) {
+    const key = qboGeneralLedgerRowIdentity_(row);
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(row);
+  });
+  return groups;
+}
+
+function qboGeneralLedgerBusinessFingerprint_(row) {
+  // Match duplicate logical-row candidates on business content before considering
+  // derived presentation state. Balance and raw/rendered JSON can move when QBO
+  // changes row ordering even though the underlying posting is unchanged.
+  const ignored = {
+    ExtractRunId:true, ExtractedAt:true, ReportName:true, ReportBasis:true,
+    Balance:true, ValuesJSON:true, RawRowJSON:true
+  };
+  const values = [];
+  QBO_GENERAL_LEDGER_HEADERS.forEach(function(header, i) {
+    if (!ignored[header]) values.push(qboGeneralLedgerStableValue_(row[i]));
+  });
+  return qboGeneralLedgerHash_(values.join('\u001f'));
+}
+
+function qboGeneralLedgerBusinessDifferenceScore_(before, after) {
+  const ignored = {
+    ExtractRunId:true, ExtractedAt:true, ReportName:true, ReportBasis:true,
+    Balance:true, ValuesJSON:true, RawRowJSON:true
+  };
+  let changed = 0;
+  QBO_GENERAL_LEDGER_HEADERS.forEach(function(header, i) {
+    if (ignored[header]) return;
+    if (qboGeneralLedgerStableValue_(before[i]) !== qboGeneralLedgerStableValue_(after[i])) changed++;
+  });
+  const a = before[22] === '' ? 0 : Number(before[22]);
+  const b = after[22] === '' ? 0 : Number(after[22]);
+  const amountDistance = Math.abs((isFinite(a) ? a : 0) - (isFinite(b) ? b : 0));
+  return changed * 1000000000 + Math.round(amountDistance * 100);
+}
+
+function qboGeneralLedgerPairIdentityGroup_(priorRows, currentRows) {
+  const prior = priorRows.map(function(row, i) { return { row:row, i:i, used:false }; });
+  const current = currentRows.map(function(row, i) { return { row:row, i:i, used:false }; });
+  const pairs = [];
+  let exactBusinessMatches = 0;
+  let residualPairs = 0;
+
+  // Pass 1: exact business-content matches. This neutralizes row permutations
+  // inside duplicate RowIdentity groups before any CHANGED pairing is attempted.
+  const currentByFingerprint = {};
+  current.forEach(function(item) {
+    const fp = qboGeneralLedgerBusinessFingerprint_(item.row);
+    if (!currentByFingerprint[fp]) currentByFingerprint[fp] = [];
+    currentByFingerprint[fp].push(item);
+  });
+  prior.forEach(function(item) {
+    const fp = qboGeneralLedgerBusinessFingerprint_(item.row);
+    const candidates = currentByFingerprint[fp] || [];
+    const match = candidates.find(function(x) { return !x.used; });
+    if (match) {
+      item.used = true; match.used = true;
+      pairs.push({ before:item.row, after:match.row });
+      exactBusinessMatches++;
+    }
+  });
+
+  // Pass 2: globally choose the lowest business-difference candidate among the
+  // remaining rows. Do not use sheet order as the primary pairing rule.
+  while (true) {
+    let best = null;
+    prior.forEach(function(a) {
+      if (a.used) return;
+      current.forEach(function(b) {
+        if (b.used) return;
+        const score = qboGeneralLedgerBusinessDifferenceScore_(a.row, b.row);
+        const tie = (a.row.__snapshotRowNumber || 0) * 1000000 + (b.row.__snapshotRowNumber || 0);
+        if (!best || score < best.score || (score === best.score && tie < best.tie)) {
+          best = { a:a, b:b, score:score, tie:tie };
+        }
+      });
+    });
+    if (!best) break;
+    best.a.used = true; best.b.used = true;
+    pairs.push({ before:best.a.row, after:best.b.row });
+    residualPairs++;
+  }
+
+  prior.filter(function(x) { return !x.used; }).forEach(function(x) { pairs.push({ before:x.row, after:null }); });
+  current.filter(function(x) { return !x.used; }).forEach(function(x) { pairs.push({ before:null, after:x.row }); });
+  return { pairs:pairs, exactBusinessMatches:exactBusinessMatches, residualPairs:residualPairs };
+}
+
+function qboGeneralLedgerChangeContext_(before, after) {
+  const row = after || before || [];
+  return [
+    row[6] || '', row[7] || '', row[8] || '', row[9] || '', row[10] || '',
+    row[13] || '', row[14] || '', row[15] || '', row[16] || '', row[17] || '',
+    row[18] || '', row[19] || '', row[20] || '', row[21] || ''
+  ];
+}
+
+function qboGeneralLedgerChangedFields_(before, after) {
+  if (!before || !after) return '';
+  const ignored = { ExtractRunId:true, ExtractedAt:true, ReportName:true, ReportBasis:true };
+  const changed = [];
+  QBO_GENERAL_LEDGER_HEADERS.forEach(function(header, i) {
+    if (ignored[header]) return;
+    if (qboGeneralLedgerStableValue_(before[i]) !== qboGeneralLedgerStableValue_(after[i])) changed.push(header);
+  });
+  return changed.join('|');
+}
+
+function qboGeneralLedgerBusinessChangedFields_(before, after) {
+  if (!before || !after) return '';
+  const ignored = {
+    ExtractRunId:true, ExtractedAt:true, ReportName:true, ReportBasis:true,
+    Balance:true, ValuesJSON:true, RawRowJSON:true
+  };
+  const changed = [];
+  QBO_GENERAL_LEDGER_HEADERS.forEach(function(header, i) {
+    if (ignored[header]) return;
+    if (qboGeneralLedgerStableValue_(before[i]) !== qboGeneralLedgerStableValue_(after[i])) changed.push(header);
+  });
+  return changed.join('|');
+}
+
+function qboGeneralLedgerClassifyChange_(before, after, changeType) {
+  if (!before) return { businessStateChanged:true, changeClass:'BUSINESS_ROW_ADDED', businessChangedFields:'ROW_ADDED' };
+  if (!after) return { businessStateChanged:true, changeClass:'BUSINESS_ROW_REMOVED', businessChangedFields:'ROW_REMOVED' };
+  const businessChangedFields = qboGeneralLedgerBusinessChangedFields_(before, after);
+  if (businessChangedFields) {
+    return { businessStateChanged:true, changeClass:'BUSINESS_STATE_CHANGE', businessChangedFields:businessChangedFields };
+  }
+  if (changeType === 'UNCHANGED') {
+    return { businessStateChanged:false, changeClass:'EXACT_UNCHANGED', businessChangedFields:'' };
+  }
+  return { businessStateChanged:false, changeClass:'DERIVED_OR_REPRESENTATIONAL_CHANGE', businessChangedFields:'' };
+}
+
+function qboGeneralLedgerHeadersMatch_(actual, expected) {
+  return expected.every(function(header, i) { return String(actual[i] || '').trim() === header; });
+}
+
+function qboGeneralLedgerPrepareChangesSheet_(workbook) {
+  let sheet = workbook.getSheetByName(QBO_GENERAL_LEDGER_REPORT.CHANGES_SHEET);
+  if (!sheet) sheet = workbook.insertSheet(QBO_GENERAL_LEDGER_REPORT.CHANGES_SHEET);
+  if (sheet.getLastRow() === 0) {
+    sheet.getRange(1,1,1,QBO_GENERAL_LEDGER_CHANGE_HEADERS.length).setValues([QBO_GENERAL_LEDGER_CHANGE_HEADERS]);
+    sheet.setFrozenRows(1);
+    return sheet;
+  }
+  const width = Math.max(sheet.getLastColumn(), QBO_GENERAL_LEDGER_CHANGE_HEADERS.length, QBO_GENERAL_LEDGER_LEGACY_CHANGE_HEADERS_V0511.length);
+  const actual = sheet.getRange(1,1,1,width).getDisplayValues()[0];
+  if (qboGeneralLedgerHeadersMatch_(actual, QBO_GENERAL_LEDGER_CHANGE_HEADERS)) {
+    sheet.setFrozenRows(1);
+    return sheet;
+  }
+  if (qboGeneralLedgerHeadersMatch_(actual, QBO_GENERAL_LEDGER_CHANGE_HEADERS_V0514)) {
+    const stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone() || 'America/Chicago', 'yyyyMMdd_HHmmss');
+    const archivedName = 'QBO_GLChanges_Superseded_v0514_' + stamp;
+    sheet.setName(archivedName);
+    safeLog_('[GL REPORT] | CHANGE LEDGER MIGRATION | ARCHIVED PRE-CLASSIFIER | sheet=' + archivedName + ' | rows=' + sheet.getLastRow());
+    sheet = workbook.insertSheet(QBO_GENERAL_LEDGER_REPORT.CHANGES_SHEET);
+    sheet.getRange(1,1,1,QBO_GENERAL_LEDGER_CHANGE_HEADERS.length).setValues([QBO_GENERAL_LEDGER_CHANGE_HEADERS]);
+    sheet.setFrozenRows(1);
+    return sheet;
+  }
+  if (qboGeneralLedgerHeadersMatch_(actual, QBO_GENERAL_LEDGER_CHANGE_HEADERS_V0513)) {
+    const stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone() || 'America/Chicago', 'yyyyMMdd_HHmmss');
+    const archivedName = 'QBO_GLChanges_Superseded_v0513_' + stamp;
+    sheet.setName(archivedName);
+    safeLog_('[GL REPORT] | CHANGE LEDGER MIGRATION | ARCHIVED SUPERSEDED MATCHER | sheet=' + archivedName + ' | rows=' + sheet.getLastRow());
+    sheet = workbook.insertSheet(QBO_GENERAL_LEDGER_REPORT.CHANGES_SHEET);
+    sheet.getRange(1,1,1,QBO_GENERAL_LEDGER_CHANGE_HEADERS.length).setValues([QBO_GENERAL_LEDGER_CHANGE_HEADERS]);
+    sheet.setFrozenRows(1);
+    return sheet;
+  }
+  if (qboGeneralLedgerHeadersMatch_(actual, QBO_GENERAL_LEDGER_LEGACY_CHANGE_HEADERS_V0511)) {
+    // v0.5.11 could partially populate rows before Sheets rejected an oversized JSON cell.
+    // Preserve that interrupted artifact verbatim and create a clean governed ledger.
+    const stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone() || 'America/Chicago', 'yyyyMMdd_HHmmss');
+    const archivedName = 'QBO_GLChanges_Abandoned_v0511_' + stamp;
+    sheet.setName(archivedName);
+    safeLog_('[GL REPORT] | CHANGE LEDGER MIGRATION | ARCHIVED | sheet=' + archivedName + ' | rows=' + sheet.getLastRow());
+    sheet = workbook.insertSheet(QBO_GENERAL_LEDGER_REPORT.CHANGES_SHEET);
+    sheet.getRange(1,1,1,QBO_GENERAL_LEDGER_CHANGE_HEADERS.length).setValues([QBO_GENERAL_LEDGER_CHANGE_HEADERS]);
+    sheet.setFrozenRows(1);
+    return sheet;
+  }
+  if (sheet.getLastRow() === 1) {
+    sheet.clear();
+    sheet.getRange(1,1,1,QBO_GENERAL_LEDGER_CHANGE_HEADERS.length).setValues([QBO_GENERAL_LEDGER_CHANGE_HEADERS]);
+    sheet.setFrozenRows(1);
+    return sheet;
+  }
+  throw new Error('QBO_GeneralLedgerChanges has an unknown populated header contract; refusing automatic rewrite.');
+}
+
+function qboGeneralLedgerComparisonAlreadyPersisted_(sheet, comparisonId) {
+  if (!sheet || sheet.getLastRow() < 2) return false;
+  const ids = sheet.getRange(2,1,sheet.getLastRow()-1,1).getDisplayValues();
+  return ids.some(function(row) { return String(row[0] || '').trim() === comparisonId; });
+}
+
+function compareQboGeneralLedgerRunSnapshots_(workbook, priorRun, currentRun, persist) {
+  const startDate = qboGeneralLedgerDateText_(currentRun.ReportStartDate);
+  const endDate = qboGeneralLedgerDateText_(currentRun.ReportEndDate);
+  if (qboGeneralLedgerDateText_(priorRun.ReportStartDate) !== startDate ||
+      qboGeneralLedgerDateText_(priorRun.ReportEndDate) !== endDate) {
+    throw new Error('GL comparison requires runs for the same report period.');
+  }
+  const priorRows = qboGeneralLedgerSnapshotRows_(priorRun.SnapshotFileId, priorRun.ExtractRunId, startDate, endDate);
+  const currentRows = qboGeneralLedgerSnapshotRows_(currentRun.SnapshotFileId, currentRun.ExtractRunId, startDate, endDate);
+  const priorGroups = qboGeneralLedgerRowsByIdentity_(priorRows);
+  const currentGroups = qboGeneralLedgerRowsByIdentity_(currentRows);
+  const keys = {};
+  Object.keys(priorGroups).forEach(function(k) { keys[k] = true; });
+  Object.keys(currentGroups).forEach(function(k) { keys[k] = true; });
+  const comparisonId = 'GLCMP_' + qboGeneralLedgerHash_(
+    QBO_GENERAL_LEDGER_CHANGE_MATCHER_VERSION + '\u001f' + QBO_GENERAL_LEDGER_CHANGE_CLASSIFIER_VERSION + '\u001f' + String(priorRun.ExtractRunId || '') + '\u001f' + String(currentRun.ExtractRunId || '')
+  ).slice(0,32);
+  const comparedAt = new Date();
+  const changes = [];
+  const counts = { ADDED:0, REMOVED:0, CHANGED:0, UNCHANGED:0 };
+  let netAmountDelta = 0;
+  let businessAmountDelta = 0;
+  let businessStateChangedCount = 0;
+  let derivedOrRepresentationalChangeCount = 0;
+  let exactBusinessMatches = 0;
+  let residualPairs = 0;
+
+  Object.keys(keys).sort().forEach(function(key) {
+    const matched = qboGeneralLedgerPairIdentityGroup_(priorGroups[key] || [], currentGroups[key] || []);
+    exactBusinessMatches += matched.exactBusinessMatches;
+    residualPairs += matched.residualPairs;
+    matched.pairs.forEach(function(pair) {
+      const before = pair.before;
+      const after = pair.after;
+      const beforeHash = before ? qboGeneralLedgerRowHash_(before) : '';
+      const afterHash = after ? qboGeneralLedgerRowHash_(after) : '';
+      const type = !before ? 'ADDED' : !after ? 'REMOVED' : beforeHash === afterHash ? 'UNCHANGED' : 'CHANGED';
+      counts[type]++;
+      const priorAmount = before && before[22] !== '' ? Number(before[22]) : 0;
+      const currentAmount = after && after[22] !== '' ? Number(after[22]) : 0;
+      const delta = (isFinite(currentAmount) ? currentAmount : 0) - (isFinite(priorAmount) ? priorAmount : 0);
+      netAmountDelta += delta;
+      const classification = qboGeneralLedgerClassifyChange_(before, after, type);
+      const businessDelta = classification.businessStateChanged ? delta : 0;
+      businessAmountDelta += businessDelta;
+      if (classification.businessStateChanged) businessStateChangedCount++;
+      if (classification.changeClass === 'DERIVED_OR_REPRESENTATIONAL_CHANGE') derivedOrRepresentationalChangeCount++;
+      const context = qboGeneralLedgerChangeContext_(before, after);
+      changes.push([
+        comparisonId, QBO_GENERAL_LEDGER_CHANGE_MATCHER_VERSION, QBO_GENERAL_LEDGER_CHANGE_CLASSIFIER_VERSION, comparedAt, startDate, endDate,
+        priorRun.ExtractRunId, currentRun.ExtractRunId, type, classification.businessStateChanged, classification.changeClass, key
+      ].concat(context).concat([
+        qboGeneralLedgerChangedFields_(before, after), classification.businessChangedFields, beforeHash, afterHash,
+        before ? before[22] : '', after ? after[22] : '', delta, businessDelta,
+        before ? before[23] : '', after ? after[23] : '',
+        before ? before.__snapshotRowNumber || '' : '', after ? after.__snapshotRowNumber || '' : '',
+        before ? String(priorRun.SnapshotFileId || '') : '',
+        after ? String(currentRun.SnapshotFileId || '') : ''
+      ]));
+    });
+  });
+
+  let persisted = false;
+  let alreadyPersisted = false;
+  if (persist) {
+    const sheet = qboGeneralLedgerPrepareChangesSheet_(workbook);
+    alreadyPersisted = qboGeneralLedgerComparisonAlreadyPersisted_(sheet, comparisonId);
+    if (!alreadyPersisted && changes.length) {
+      sheet.getRange(sheet.getLastRow()+1,1,changes.length,QBO_GENERAL_LEDGER_CHANGE_HEADERS.length).setValues(changes);
+      sheet.getDataRange().setWrapStrategy(SpreadsheetApp.WrapStrategy.CLIP);
+      persisted = true;
+    }
+  }
+
+  const summary = {
+    comparisonId: comparisonId,
+    matcherVersion: QBO_GENERAL_LEDGER_CHANGE_MATCHER_VERSION,
+    classifierVersion: QBO_GENERAL_LEDGER_CHANGE_CLASSIFIER_VERSION,
+    exactBusinessMatches: exactBusinessMatches,
+    residualPairs: residualPairs,
+    priorExtractRunId: String(priorRun.ExtractRunId || ''),
+    currentExtractRunId: String(currentRun.ExtractRunId || ''),
+    priorSnapshotFileId: String(priorRun.SnapshotFileId || ''),
+    currentSnapshotFileId: String(currentRun.SnapshotFileId || ''),
+    priorRowCount: priorRows.length,
+    currentRowCount: currentRows.length,
+    added: counts.ADDED,
+    removed: counts.REMOVED,
+    changed: counts.CHANGED,
+    unchanged: counts.UNCHANGED,
+    netAmountDelta: Number(netAmountDelta.toFixed(2)),
+    businessStateChanged: businessStateChangedCount,
+    derivedOrRepresentationalChanges: derivedOrRepresentationalChangeCount,
+    businessAmountDelta: Number(businessAmountDelta.toFixed(2)),
+    persisted: persisted,
+    alreadyPersisted: alreadyPersisted
+  };
+  safeLog_('[GL REPORT] | RUN COMPARISON | ' + JSON.stringify(summary));
+  return summary;
+}
+
+function compareLatestTwoQboGeneralLedgerRunsForLatestPeriod() {
+  const ss = getQboGeneralLedgerReportSpreadsheet_();
+  const sheet = ss.getSheetByName(QBO_GENERAL_LEDGER_REPORT.RUNS_SHEET);
+  if (!sheet || sheet.getLastRow() < 3) throw new Error('At least two GL run-history rows are required.');
+  const values = sheet.getDataRange().getValues();
+  const headers = values[0].map(function(v) { return String(v || '').trim(); });
+  const idx = {};
+  QBO_GENERAL_LEDGER_RUN_HEADERS.forEach(function(h) { idx[h] = headers.indexOf(h); });
+  function toRun(row) {
+    const out = {};
+    QBO_GENERAL_LEDGER_RUN_HEADERS.forEach(function(h) { out[h] = row[idx[h]]; });
+    return out;
+  }
+  const current = toRun(values[values.length - 1]);
+  const startDate = qboGeneralLedgerDateText_(current.ReportStartDate);
+  const endDate = qboGeneralLedgerDateText_(current.ReportEndDate);
+  let prior = null;
+  for (let i = values.length - 2; i >= 1; i--) {
+    const candidate = toRun(values[i]);
+    if (qboGeneralLedgerDateText_(candidate.ReportStartDate) === startDate &&
+        qboGeneralLedgerDateText_(candidate.ReportEndDate) === endDate) {
+      prior = candidate;
+      break;
+    }
+  }
+  if (!prior) throw new Error('No prior GL run exists for latest period ' + startDate + '..' + endDate + '.');
+  return compareQboGeneralLedgerRunSnapshots_(ss, prior, current, true);
+}
+
+function testQboGeneralLedgerRunComparisonEvidenceContract() {
+  const headers = QBO_GENERAL_LEDGER_CHANGE_HEADERS;
+  if (headers.indexOf('PriorRowJSON') >= 0 || headers.indexOf('CurrentRowJSON') >= 0) {
+    throw new Error('GL comparison must not duplicate full row JSON into change-ledger cells.');
+  }
+  ['MatcherVersion','ClassifierVersion','BusinessStateChanged','ChangeClass','TransactionType','TransactionId','Num','Name','MemoDescription','Split','ChangedFields','BusinessChangedFields','BusinessAmountDelta'].forEach(function(h) {
+    if (headers.indexOf(h) < 0) throw new Error('Missing human-auditable GL change context field ' + h + '.');
+  });
+  ['PriorSnapshotRowNumber','CurrentSnapshotRowNumber','PriorSnapshotFileId','CurrentSnapshotFileId'].forEach(function(h) {
+    if (headers.indexOf(h) < 0) throw new Error('Missing exact GL change evidence locator ' + h + '.');
+  });
+  const id1 = 'GLCMP_' + qboGeneralLedgerHash_('A\u001fB').slice(0,32);
+  const id2 = 'GLCMP_' + qboGeneralLedgerHash_('A\u001fB').slice(0,32);
+  if (id1 !== id2) throw new Error('GL comparison identity must be deterministic for the same run pair.');
+  if (!qboGeneralLedgerHeadersMatch_(QBO_GENERAL_LEDGER_LEGACY_CHANGE_HEADERS_V0511, QBO_GENERAL_LEDGER_LEGACY_CHANGE_HEADERS_V0511)) {
+    throw new Error('Legacy v0.5.11 change-ledger contract must be recognizable for safe archival migration.');
+  }
+  const priorPermutation = [
+    ['', '', '', '', '', '', 0,'Data','Accounts Receivable','122','', '', '', new Date(2026,7,1),'Payment','P1','', 'Test','N1','', 'Accounts Receivable','122',3.59,-10,'',''],
+    ['', '', '', '', '', '', 0,'Data','Accounts Receivable','122','', '', '', new Date(2026,7,1),'Payment','P1','', 'Test','N1','', 'Accounts Receivable','122',22.44,-20,'','']
+  ];
+  const currentPermutation = [priorPermutation[1].slice(), priorPermutation[0].slice()];
+  currentPermutation[0][23] = -30; currentPermutation[1][23] = -40;
+  const paired = qboGeneralLedgerPairIdentityGroup_(priorPermutation, currentPermutation);
+  if (paired.exactBusinessMatches !== 2) throw new Error('Permutation matching test failed: expected 2 exact business matches.');
+  const pairedAmounts = paired.pairs.map(function(p) { return String(p.before[22]) + '>' + String(p.after[22]); }).sort();
+  if (pairedAmounts.join('|') !== '22.44>22.44|3.59>3.59') throw new Error('Permutation matching paired different amount rows.');
+  if (qboGeneralLedgerBusinessFingerprint_(priorPermutation[0]) !== qboGeneralLedgerBusinessFingerprint_(currentPermutation[1])) throw new Error('Business fingerprint should ignore Balance/raw presentation changes.');
+  const derivedBefore = priorPermutation[0].slice();
+  const derivedAfter = priorPermutation[0].slice(); derivedAfter[23] = -999; derivedAfter[24] = 'rendered-change'; derivedAfter[25] = 'raw-change';
+  const derivedClass = qboGeneralLedgerClassifyChange_(derivedBefore, derivedAfter, 'CHANGED');
+  if (derivedClass.businessStateChanged !== false || derivedClass.changeClass !== 'DERIVED_OR_REPRESENTATIONAL_CHANGE') throw new Error('Balance/raw-only change must not be classified as business-state change.');
+  const businessAfter = priorPermutation[0].slice(); businessAfter[22] = 4.59;
+  const businessClass = qboGeneralLedgerClassifyChange_(priorPermutation[0], businessAfter, 'CHANGED');
+  if (businessClass.businessStateChanged !== true || businessClass.businessChangedFields.indexOf('Amount') < 0) throw new Error('Amount change must be classified as business-state change.');
+  const addedClass = qboGeneralLedgerClassifyChange_(null, priorPermutation[0], 'ADDED');
+  if (!addedClass.businessStateChanged || addedClass.changeClass !== 'BUSINESS_ROW_ADDED') throw new Error('Added row must be classified as business evidence change.');
+  const removedClass = qboGeneralLedgerClassifyChange_(priorPermutation[0], null, 'REMOVED');
+  if (!removedClass.businessStateChanged || removedClass.changeClass !== 'BUSINESS_ROW_REMOVED') throw new Error('Removed row must be classified as business evidence change.');
+  const exactClass = qboGeneralLedgerClassifyChange_(priorPermutation[0], priorPermutation[0].slice(), 'UNCHANGED');
+  if (exactClass.businessStateChanged || exactClass.changeClass !== 'EXACT_UNCHANGED') throw new Error('Exact unchanged row classification failed.');
+  const result = { Suite:'GeneralLedgerRunComparisonEvidenceContract', checkCount:12, passed:true };
+  safeLog_('[GL REPORT] | TEST | ' + JSON.stringify(result));
+  return result;
+}
+
+function testQboGeneralLedgerPeriodIdentityNormalization() {
+  const d = new Date(2026, 7, 1);
+  if (qboGeneralLedgerDateText_(d) !== '2026-08-01') throw new Error('Date normalization failed.');
+  if (qboGeneralLedgerDateText_('2026-08-01') !== '2026-08-01') throw new Error('ISO normalization failed.');
+  const result = { Suite:'GeneralLedgerPeriodIdentityNormalization', checkCount:2, passed:true };
+  safeLog_('[GL REPORT] | TEST | ' + JSON.stringify(result));
+  return result;
 }
 
 function applyQboGeneralLedgerPeriodFormats_(sheet, startRow, rowCount) {
