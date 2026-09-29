@@ -46,7 +46,8 @@ const QBO_SALES_TAX_RECOGNITION = Object.freeze({
   ROW_HASH_VERSION: '1',
   DATA_FOLDER_ASSET_KEY: 'QBO_DATA_EXCHANGE_CURRENT_FOLDER',
   DATA_FOLDER_PATH: 'Data Platform/Data Exchange/QuickBooks/Current',
-  ALLOWED_TYPES: Object.freeze(['Invoice', 'Sales Receipt', 'Credit Memo', 'Refund'])
+  ALLOWED_TYPES: Object.freeze(['Invoice', 'Sales Receipt', 'Credit Memo', 'Refund']),
+  CONDITIONAL_PAYMENT_ACCOUNT_PATTERN: /unapplied cash payment income/i
 });
 
 const QBO_STR_HEADERS = Object.freeze([
@@ -486,16 +487,46 @@ function qboStrReadCapturedGlPeriod_(startDate, endDate, expectedExtractRunId) {
 }
 
 function qboStrIsEligibleEvidenceRow_(row) {
-  if (QBO_SALES_TAX_RECOGNITION.ALLOWED_TYPES.indexOf(row.transactionType) === -1) {
-    return false;
-  }
+  const account = qboStrNorm_(qboStrTerminalAccount_(row.distributionAccount));
+  const isStandardType = QBO_SALES_TAX_RECOGNITION.ALLOWED_TYPES.indexOf(row.transactionType) !== -1;
+  const isUnappliedCashPayment =
+    row.transactionType === 'Payment' &&
+    QBO_SALES_TAX_RECOGNITION.CONDITIONAL_PAYMENT_ACCOUNT_PATTERN.test(account);
+
+  if (!isStandardType && !isUnappliedCashPayment) return false;
   if (!row.transactionId) return false;
   if (row.amount === null || Math.abs(row.amount) < 0.0000001) return false;
 
-  const account = qboStrNorm_(qboStrTerminalAccount_(row.distributionAccount));
   if (account === 'undeposited funds') return false;
   if (/texas comptroller|sales tax payable|tax payable/.test(account)) return false;
   return true;
+}
+
+
+function testQboSalesTaxRecognitionEligibilityContract() {
+  const checks = [];
+  function ok(name, value) { checks.push({name: name, passed: !!value}); }
+  function row(type, account, amount) {
+    return {
+      transactionType: type,
+      transactionId: 'TEST-1',
+      distributionAccount: account,
+      amount: amount
+    };
+  }
+
+  ok('standard Invoice remains eligible', qboStrIsEligibleEvidenceRow_(row('Invoice', 'Pools:Recurring Pool Services Income', 100)));
+  ok('Payment to Unapplied Cash Payment Income is eligible', qboStrIsEligibleEvidenceRow_(row('Payment', 'Unapplied Cash Payment Income-1', 757.75)));
+  ok('ordinary Payment remains excluded', !qboStrIsEligibleEvidenceRow_(row('Payment', 'Accounts Receivable', 757.75)));
+  ok('Payment whose split is Undeposited Funds is governed by distribution account, not split', qboStrIsEligibleEvidenceRow_({transactionType:'Payment',transactionId:'TEST-2',distributionAccount:'Unapplied Cash Payment Income-1',splitAccount:'Undeposited Funds',amount:757.75}));
+  ok('Undeposited Funds distribution account remains excluded', !qboStrIsEligibleEvidenceRow_(row('Payment', 'Undeposited Funds', 757.75)));
+  ok('tax payable remains excluded', !qboStrIsEligibleEvidenceRow_(row('Invoice', 'Texas Comptroller Payable', 13.72)));
+
+  const passed = checks.every(function(c) { return c.passed; });
+  const result = {Version:'0.5.48d', Status:passed?'PASS':'FAIL', Check_Count:checks.length, Passed:passed, Checks:checks};
+  safeLog_('[SALES TAX RECOGNITION ELIGIBILITY TEST] ' + JSON.stringify(result));
+  if (!passed) throw new Error('Sales Tax Recognition eligibility contract test failed.');
+  return result;
 }
 
 function qboStrHeaderIndex_(headers, required) {
@@ -857,7 +888,7 @@ function qboStrRenderControls_(sheet, reportMonth, periodKey, sequence, runId, d
     ['Accounting Method', 'Cash'],
     ['REPORT_MONTH (Default)', reportMonth],
     ['Population status', 'SUPPORTING_EVIDENCE_NOT_YET_EXACT_SALES_BY_TAX_NAME_CLONE'],
-    ['Included transaction types', 'Invoice; Sales Receipt; Credit Memo; Refund'],
+    ['Included transaction types', 'Invoice; Sales Receipt; Credit Memo; Refund; Payment only when Distribution Account is Unapplied Cash Payment Income'],
     ['Excluded accounts', 'Undeposited Funds; Texas Comptroller / tax-payable'],
     ['Row Hash Version', QBO_SALES_TAX_RECOGNITION.ROW_HASH_VERSION],
     ['Latest Period Key', periodKey],
@@ -896,3 +927,34 @@ function qboStrPeriodEnd_(p){const s=qboStrPeriodStart_(p);if(!s)return '';const
 function qboStrAssertRequestedPeriod_(periodKey,startDate,endDate,source){const expected=startDate.slice(0,7).replace('-','');if(periodKey!==expected)throw new Error('SalesTaxRecognition requested-period invariant failed: periodKey='+periodKey+' expected='+expected);if(qboStrDateText_(source.reportStartDate)!==startDate||qboStrDateText_(source.reportEndDate)!==endDate)throw new Error('SalesTaxRecognition requested-period invariant failed: source GL period '+qboStrDateText_(source.reportStartDate)+'..'+qboStrDateText_(source.reportEndDate)+' expected '+startDate+'..'+endDate);}
 function testQboSalesTaxRecognitionRequestedPeriodContract(){const checks=[];function ok(name,v){checks.push({name:name,passed:!!v});}ok('period start',qboStrPeriodStart_('202608')==='2026-08-01');ok('period end',qboStrPeriodEnd_('202608')==='2026-08-31');qboStrAssertRequestedPeriod_('202608','2026-08-01','2026-08-31',{reportStartDate:'2026-08-01',reportEndDate:'2026-08-31'});ok('matching GL period accepted',true);let blocked=false;try{qboStrAssertRequestedPeriod_('202608','2026-08-01','2026-08-31',{reportStartDate:'2026-07-01',reportEndDate:'2026-07-31'});}catch(e){blocked=true;}ok('mismatched GL period blocked',blocked);const passed=checks.every(function(c){return c.passed;});const result={checkCount:checks.length,passed:passed,checks:checks};safeLog_('[SALES TAX RECOGNITION CONTRACT TEST] '+JSON.stringify(result));if(!passed)throw new Error('Sales Tax Recognition requested-period contract test failed.');return result;}
 function upgradeQboSalesTaxEvidenceControlMetadata(){const tsd=qboTsdGetWorkbook_();qboTsdEnsureWorkbook_(tsd);qboTsdEnsureControls_(tsd);const str=qboStrGetWorkbook_();qboStrEnsureWorkbook_(str);qboStrEnsureControls_(str);const result={taxableSalesDetailSpreadsheetId:tsd.getId(),salesTaxRecognitionSpreadsheetId:str.getId(),status:'SUCCESS'};safeLog_('[SALES TAX EVIDENCE CONTROL METADATA] '+JSON.stringify(result));return result;}
+
+
+/**
+ * One-time historical reconstruction operator for July 2026.
+ *
+ * Binds Sales Tax Recognition explicitly to the refreshed July 2026
+ * governed General Ledger extract. Do not use as a general production
+ * Recognition entry point.
+ */
+function exportQboSalesTaxRecognitionForJuly2026RefreshedGl() {
+  return exportQboSalesTaxRecognitionForPeriod(
+    '2026-07-01',
+    '2026-07-31',
+    'a0e9b538-529a-445c-aea7-57740cad1dc9'
+  );
+}
+
+/**
+ * One-time governed recovery operator for the third August 2026 pre-filing cycle.
+ *
+ * Rebuilds Sales Tax Recognition from the exact already-frozen GL extract after
+ * the Unapplied Cash Payment eligibility repair. This does not acquire a new GL
+ * and does not mutate any prior Recognition snapshot.
+ */
+function exportQboSalesTaxRecognitionForAugust2026PreFilingRecovery() {
+  return exportQboSalesTaxRecognitionForPeriod(
+    '2026-08-01',
+    '2026-08-31',
+    '149dc12c-6bef-4201-9021-26907f1b9b10'
+  );
+}
