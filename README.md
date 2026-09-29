@@ -1,3 +1,93 @@
+# 50 QBO Import Hub Standalone — Master Architecture
+
+## Sales-Tax Forward Evidence Contract — 2026-09-18
+
+The governed forward pre-filing design uses Sales Tax Recognition and Taxable Sales Detail as complementary evidence populations. Together, the governed reconstruction derives Gross Sales, Non-Taxable Sales, Taxable Sales, and Tax Due; those four totals reconcile to the exact QBO Sales Tax Liability snapshot bound by Application 21. Sales by Tax Name was development/validation evidence and is not a continuing forward evidence dependency or a required sixth `PREFILING_INPUT_V2` artifact.
+
+Sales Tax Recognition is therefore not required to be an exact row-for-row Sales-by-Tax-Name clone. Likewise, raw sums of Recognition `Amount` or Taxable Sales Detail `Recognized_Taxable_Amount` must not be treated as standalone filing-basis totals or Liability PASS/FAIL controls. The governed reconstruction/bridge logic owns that conclusion.
+
+
+This master README contains current App 50 architecture authority followed by retained version/change history. Current architecture rules take precedence over superseded historical implementation notes.
+
+## Master Pipeline Diagram Standard
+
+The master README is the architectural navigation authority for App 50. Every governed pipeline MUST have a rendered architecture diagram in this README that makes the pipeline understandable without reconstructing ownership from source code.
+
+Each pipeline diagram MUST show:
+
+- where the pipeline starts and ends;
+- the major processing stages;
+- immutable evidence and durable ledgers created or consumed;
+- the ownership boundary when responsibility passes to another pipeline;
+- the exact handoff across that boundary;
+- authoritative count/control lineage where applicable; and
+- downstream pipeline relationships without implying that downstream work belongs to the upstream pipeline.
+
+Prefer Mermaid diagrams because the Markdown source remains maintainable while supported renderers display a clean diagram. Do not use box-drawing ASCII as the master architecture representation.
+
+When a pipeline contract or ownership boundary changes, update its master README diagram as part of the same architecture change. A pipeline architecture change is not documentation-complete while its master diagram is stale.
+
+### FULL_EXPORT acquisition → State Capture Ingestion
+
+The FULL_EXPORT acquisition pipeline owns the acquisition through durable registration of the completed source in `01_Sources`. Creating `01_Sources` is **not** State Capture Ingestion. State Capture Ingestion begins only after the registered source is evaluated for eligibility/admission and handed into `05`.
+
+`QBO_ExportStatus` is the durable export-acquisition history. `ObservationCount` originates as acquisition evidence associated with the exact completed export and immutable MasterBackup, is carried into `01_Sources`, and then becomes the ingestion expectation in `05`.
+
+```mermaid
+flowchart TB
+    subgraph FE["FULL_EXPORT ACQUISITION"]
+        A["Exporter runs"]
+        B["Exporter completes all governed sheets"]
+        C["Immutable MasterBackup created"]
+        D["Determine ObservationCount<br/>from governed entity sheet in MasterBackup"]
+        E["QBO_ExportStatus records<br/>MasterBackupFileId<br/>MasterBackupFileName<br/>ObservationCount<br/>completion evidence"]
+        F["QBO_ExportStatus marked COMPLETE"]
+        G["01_Sources registers completed acquisition<br/>SourceId<br/>exact MasterBackup lineage<br/>ObservationCount<br/>acquisition timestamps / scope"]
+
+        A --> B --> C --> D --> E --> F --> G
+    end
+
+    G --> H{{"ACQUISITION / INGESTION BOUNDARY"}}
+
+    subgraph SCI["STATE CAPTURE INGESTION"]
+        I["Read eligible source from 01_Sources"]
+        J["Validate source evidence / eligibility"]
+        K["Register source unit in 05"]
+        L["05.ExpectedObservationCount<br/>= 01_Sources.ObservationCount"]
+        M["Process observations<br/>from immutable MasterBackup"]
+        N["Create Change Payloads"]
+        O["Register physical artifacts<br/>in 06_Payload_Artifacts"]
+        P["Checkpoint 05"]
+
+        I --> J --> K --> L --> M --> N --> O --> P
+    end
+
+    H --> I
+```
+
+The governed count lineage is:
+
+```mermaid
+flowchart LR
+    A["QBO_ExportStatus.ObservationCount<br/>export acquisition history"]
+    B["01_Sources.ObservationCount<br/>FULL_EXPORT source ledger"]
+    C{{"ACQUISITION / INGESTION BOUNDARY"}}
+    D["05.ExpectedObservationCount<br/>ingestion expectation"]
+    E["05.ProcessedObservationCount"]
+    F["Σ 06.ObservationCount"]
+
+    A --> B --> C --> D --> E --> F
+```
+
+For entity exports, `ObservationCount` means the number of observations in the manifest-governed primary/entity dataset preserved by the exact immutable MasterBackup. Child/dependent dataset rows are not added to the parent entity observation count.
+
+The required FULL_EXPORT handoff is therefore:
+
+`FULL_EXPORT → immutable MasterBackup + QBO_ExportStatus → 01 source registration → [ACQUISITION / INGESTION BOUNDARY] → eligibility/admission → 05 → Change Payload → 06`
+
+
+---
+
 
 ### v1.5.52 — Governed source evidence / Raw Entity Evidence adapters
 - Changes the Change Payload contract to explicitly separate immutable `SourceEvidence`, embedded complete `RawEntityEvidence`, and governed `NormalizedEntityState`.
