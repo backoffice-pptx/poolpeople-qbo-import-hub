@@ -636,6 +636,13 @@ function runNextScheduledQboExport() {
     invokeScheduledQboExporter_(entry.exportFunctionName);
     masterBackupMetadata = consumeQboExporterMasterBackupMetadata_(exportKey);
 
+    console.log(
+      '[OBSCOUNT PROVENANCE] | marker=OBSCOUNT_FORWARD_V1_5_146 | stage=24_METADATA_CONSUMED' +
+      ' | runId=' + runId +
+      ' | export=' + exportKey +
+      ' | observationCount=' + String(masterBackupMetadata && masterBackupMetadata.observationCount)
+    );
+
     if (!masterBackupMetadata) {
       throw new Error(
         'Exporter completed without returning Master Backup metadata for ' +
@@ -968,6 +975,13 @@ function testQboStateCaptureAutoRegistrationOnce() {
   try {
     invokeScheduledQboExporter_(entry.exportFunctionName);
     masterBackupMetadata = consumeQboExporterMasterBackupMetadata_(exportKey);
+
+    console.log(
+      '[OBSCOUNT PROVENANCE] | marker=OBSCOUNT_FORWARD_V1_5_146 | stage=24_METADATA_CONSUMED' +
+      ' | runId=' + runId +
+      ' | export=' + exportKey +
+      ' | observationCount=' + String(masterBackupMetadata && masterBackupMetadata.observationCount)
+    );
 
     if (!masterBackupMetadata) {
       throw new Error(
