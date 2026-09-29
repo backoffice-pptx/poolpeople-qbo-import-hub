@@ -155,6 +155,19 @@ function registerQboCompletedFullExportSource_(runId, exportKey) {
     const historyExportFunction = String(row[3] || '').trim();
     const masterBackupFileId = String(row[9] || '').trim();
     const masterBackupFileName = String(row[10] || '').trim();
+    const observationCount = row[11];
+    const validObservationCount = Number.isFinite(observationCount) &&
+      observationCount >= 0 && Math.floor(observationCount) === observationCount;
+
+    console.log(
+      '[OBSCOUNT PROVENANCE] | marker=OBSCOUNT_FORWARD_V1_5_146 | stage=68_HISTORY_REREAD' +
+      ' | runId=' + normalizedRunId +
+      ' | export=' + normalizedExportKey +
+      ' | observationCount=' + String(observationCount) +
+      ' | valid=' + validObservationCount +
+      ' | historyRow=' + rowNumber +
+      ' | sourceTargetColumn=20'
+    );
 
     if (status !== 'COMPLETE') {
       throw new Error(
@@ -167,6 +180,13 @@ function registerQboCompletedFullExportSource_(runId, exportKey) {
     if (!masterBackupFileId || !masterBackupFileName) {
       throw new Error(
         'Automatic State Capture registration requires exact Master Backup lineage' +
+        ' for runId=' + normalizedRunId + ', export=' + normalizedExportKey + '.'
+      );
+    }
+
+    if (!validObservationCount) {
+      throw new Error(
+        'Automatic State Capture registration requires a valid durable ObservationCount' +
         ' for runId=' + normalizedRunId + ', export=' + normalizedExportKey + '.'
       );
     }
@@ -243,8 +263,29 @@ function registerQboCompletedFullExportSource_(runId, exportKey) {
       new Date(),
       '',
       QBO_STATE_CAPTURE.PROCESSING_STATUS_UNPROCESSED,
-      ''
+      '',
+      observationCount
     ]]);
+    SpreadsheetApp.flush();
+    const sourceRowNumber = sourceSheet.getLastRow();
+    const persistedSourceObservationCount = sourceSheet.getRange(sourceRowNumber, 20).getValue();
+    const persistedSourceValid = Number.isFinite(persistedSourceObservationCount) &&
+      persistedSourceObservationCount >= 0 && Math.floor(persistedSourceObservationCount) === persistedSourceObservationCount;
+    console.log(
+      '[OBSCOUNT PROVENANCE] | marker=OBSCOUNT_FORWARD_V1_5_146 | stage=68_SOURCE_POSTWRITE' +
+      ' | runId=' + normalizedRunId +
+      ' | export=' + normalizedExportKey +
+      ' | observationCount=' + String(persistedSourceObservationCount) +
+      ' | valid=' + persistedSourceValid +
+      ' | sourceRow=' + sourceRowNumber +
+      ' | targetColumn=20'
+    );
+    if (!persistedSourceValid || persistedSourceObservationCount !== observationCount) {
+      throw new Error(
+        '01_Sources ObservationCount persistence verification failed for sourceId=' + sourceId +
+        ', expected=' + observationCount + ', persisted=' + String(persistedSourceObservationCount) + '.'
+      );
+    }
     applyQboStateCaptureSheetLayout_(sourceSheet);
 
     console.log(
@@ -345,8 +386,20 @@ function processQboFullExportSourceRegistration_(applyChanges) {
       const status = String(row[6] || '').trim();
       const masterBackupFileId = String(row[9] || '').trim();
       const masterBackupFileName = String(row[10] || '').trim();
+      const observationCount = row[11];
+      const validObservationCount = Number.isFinite(observationCount) &&
+        observationCount >= 0 && Math.floor(observationCount) === observationCount;
 
       if (status !== 'COMPLETE' || !masterBackupFileId || !masterBackupFileName) {
+        return;
+      }
+      if (!validObservationCount) {
+        skippedDetails.push({
+          row: sourceRowNumber,
+          runId: runId,
+          exportKey: exportKey,
+          reason: 'MISSING_OR_INVALID_OBSERVATION_COUNT'
+        });
         return;
       }
 
@@ -414,7 +467,8 @@ function processQboFullExportSourceRegistration_(applyChanges) {
         applyChanges ? new Date() : '',
         '',
         QBO_STATE_CAPTURE.PROCESSING_STATUS_UNPROCESSED,
-        ''
+        '',
+        observationCount
       ]);
     });
 
@@ -651,6 +705,7 @@ function processQboLegacyFullExportSourceRegistration_(applyChanges) {
         applyChanges ? new Date() : '',
         '',
         QBO_STATE_CAPTURE.PROCESSING_STATUS_UNPROCESSED,
+        '',
         ''
       ]);
     });

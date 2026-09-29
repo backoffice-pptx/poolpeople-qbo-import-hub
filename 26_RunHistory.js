@@ -71,7 +71,8 @@ const QBO_RUN_HISTORY_HEADERS_ = Object.freeze({
     'DurationMs',
     'Error',
     'MasterBackupFileId',
-    'MasterBackupFileName'
+    'MasterBackupFileName',
+    'ObservationCount'
   ]),
   STATUS: Object.freeze([
     'ExportKey',
@@ -314,6 +315,18 @@ function ensureQboRunHistoryMasterBackupSchema_(spreadsheet) {
     idHeader === 'MasterBackupFileId' &&
     nameHeader === 'MasterBackupFileName'
   ) {
+    const observationHeader = String(sheet.getRange(1, 12).getValue() || '').trim();
+    if (observationHeader === 'ObservationCount') {
+      return;
+    }
+    if (observationHeader) {
+      throw new Error(
+        'Cannot upgrade ' + QBO_RUN_HISTORY.EXPORTS_SHEET +
+        ': column L contains unexpected header ' + observationHeader + '.'
+      );
+    }
+    sheet.getRange(1, 12).setValue('ObservationCount');
+    sheet.setFrozenRows(1);
     return;
   }
 
@@ -466,6 +479,7 @@ function recordQboScheduledExportStart_(runId, position, entry, startedAt) {
     '',
     '',
     '',
+    '',
     ''
   ]);
 
@@ -493,15 +507,61 @@ function recordQboScheduledExportResult_(runId, entry, completedAt, status, dura
   }
 
   const backup = masterBackupMetadata || {};
+  const observationCount = backup.observationCount;
+  const isComplete = String(status || '').trim() === 'COMPLETE';
+  const validObservationCount = Number.isFinite(observationCount) &&
+    observationCount >= 0 && Math.floor(observationCount) === observationCount;
 
-  exportsSheet.getRange(rowNumber, 6, 1, 6).setValues([[
+  console.log(
+    '[OBSCOUNT PROVENANCE] | marker=OBSCOUNT_FORWARD_V1_5_146 | stage=26_PREWRITE' +
+    ' | runId=' + runId +
+    ' | export=' + entry.key +
+    ' | status=' + status +
+    ' | observationCount=' + String(observationCount) +
+    ' | valid=' + validObservationCount +
+    ' | row=' + rowNumber +
+    ' | targetColumn=12'
+  );
+
+  if (isComplete && !validObservationCount) {
+    throw new Error(
+      'Cannot record COMPLETE export history without a valid ObservationCount' +
+      ' for runId=' + runId + ', export=' + entry.key + '.'
+    );
+  }
+
+  exportsSheet.getRange(rowNumber, 6, 1, 7).setValues([[
     new Date(completedAt),
     status,
     durationMs,
     errorMessage || '',
     backup.masterBackupFileId || '',
-    backup.masterBackupFileName || ''
+    backup.masterBackupFileName || '',
+    validObservationCount ? observationCount : ''
   ]]);
+
+  if (isComplete) {
+    SpreadsheetApp.flush();
+    const persistedObservationCount = exportsSheet.getRange(rowNumber, 12).getValue();
+    const persistedValid = Number.isFinite(persistedObservationCount) &&
+      persistedObservationCount >= 0 && Math.floor(persistedObservationCount) === persistedObservationCount;
+    console.log(
+      '[OBSCOUNT PROVENANCE] | marker=OBSCOUNT_FORWARD_V1_5_146 | stage=26_POSTWRITE' +
+      ' | runId=' + runId +
+      ' | export=' + entry.key +
+      ' | observationCount=' + String(persistedObservationCount) +
+      ' | valid=' + persistedValid +
+      ' | row=' + rowNumber +
+      ' | targetColumn=12'
+    );
+    if (!persistedValid || persistedObservationCount !== observationCount) {
+      throw new Error(
+        'ObservationCount persistence verification failed for runId=' + runId +
+        ', export=' + entry.key + ', expected=' + observationCount +
+        ', persisted=' + String(persistedObservationCount) + '.'
+      );
+    }
+  }
 
   const startedAt = exportsSheet.getRange(rowNumber, 5).getValue();
   updateQboExportStatusRow_(statusSheet, entry, [

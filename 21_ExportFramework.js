@@ -233,10 +233,20 @@ function registerQboExporterSheetCompletion_(sheetName) {
 
   const snapshot = createQboExportSnapshot_(entry.key);
 
+  const observationCount = deriveQboExporterMasterBackupObservationCount_(entry, snapshot);
+
   QBO_EXPORTER_MASTER_BACKUP_METADATA_[entry.key] = {
     masterBackupFileId: snapshot.snapshotFileId,
-    masterBackupFileName: snapshot.snapshotName
+    masterBackupFileName: snapshot.snapshotName,
+    observationCount: observationCount
   };
+
+  console.log(
+    '[OBSCOUNT PROVENANCE] | marker=OBSCOUNT_FORWARD_V1_5_146 | stage=21_METADATA_CREATED' +
+    ' | export=' + entry.key +
+    ' | observationCount=' + observationCount +
+    ' | masterBackup=' + snapshot.snapshotName
+  );
 
   const durationMs = Date.now() - state.firstCompletedAt;
 
@@ -256,6 +266,55 @@ function registerQboExporterSheetCompletion_(sheetName) {
     snapshot: snapshot,
     durationMs: durationMs
   };
+}
+
+
+/**
+ * Derives the governed entity-observation population from the exact immutable
+ * Master Backup created for one completed exporter. The manifest's explicit
+ * entitySheetName is semantic authority; child/dependent sheets are excluded.
+ *
+ * @param {Object} entry Governed export-manifest entry.
+ * @param {Object} snapshot Master Backup metadata returned by snapshot writer.
+ * @return {number} Finite non-negative integer observation count.
+ */
+function deriveQboExporterMasterBackupObservationCount_(entry, snapshot) {
+  const entitySheetName = String(entry && entry.entitySheetName || '').trim();
+  const snapshotFileId = String(snapshot && snapshot.snapshotFileId || '').trim();
+
+  if (!entitySheetName) {
+    throw new Error(
+      'Cannot derive ObservationCount for ' + String(entry && entry.key || '') +
+      ': manifest entitySheetName is missing.'
+    );
+  }
+  if (!Array.isArray(entry.sheetNames) || entry.sheetNames.indexOf(entitySheetName) === -1) {
+    throw new Error(
+      'Cannot derive ObservationCount for ' + entry.key +
+      ': entitySheetName is not owned by the export manifest.'
+    );
+  }
+  if (!snapshotFileId) {
+    throw new Error(
+      'Cannot derive ObservationCount for ' + entry.key +
+      ': Master Backup file ID is missing.'
+    );
+  }
+
+  const backup = SpreadsheetApp.openById(snapshotFileId);
+  const entitySheet = backup.getSheetByName(entitySheetName);
+  if (!entitySheet) {
+    throw new Error(
+      'Cannot derive ObservationCount for ' + entry.key +
+      ': Master Backup is missing governed entity sheet ' + entitySheetName + '.'
+    );
+  }
+
+  const observationCount = Math.max(0, entitySheet.getLastRow() - 1);
+  if (!Number.isFinite(observationCount) || observationCount < 0 || Math.floor(observationCount) !== observationCount) {
+    throw new Error('Invalid ObservationCount derived for ' + entry.key + '.');
+  }
+  return observationCount;
 }
 
 
