@@ -1,7 +1,7 @@
 /** ============================================================================
  * Application : 50 QBO Import Hub Standalone
  * Module      : 144_QBO_PostFilingSalesTaxGlActivity.js
- * Version     : 1.5.193
+ * Version     : 1.5.194
  * Purpose     : Governed, narrow post-filing GL evidence capture for Texas
  *               sales-tax settlement activity without refreshing/replacing the
  *               frozen filing-basis General Ledger evidence.
@@ -34,7 +34,7 @@
  * ============================================================================
  */
 
-const QBO_POST_FILING_SALES_TAX_GL_VERSION = '1.5.193';
+const QBO_POST_FILING_SALES_TAX_GL_VERSION = '1.5.194';
 const QBO_POST_FILING_SALES_TAX_GL = Object.freeze({
   ACCOUNT_NAME: 'Texas Comptroller Payable',
   ACCOUNT_ID: '221',
@@ -127,6 +127,12 @@ function captureQboPostFilingSalesTaxGlActivity(startDate, endDate, filingContex
     return QBO_POST_FILING_SALES_TAX_GL.RETAINED_TRANSACTION_TYPES.indexOf(
       String(row[idx.TransactionType] || '')
     ) >= 0;
+  });
+
+  // Producer integrity gate: the structured transaction identity used for
+  // retention/publication must agree with the immutable raw QBO row.
+  retained.forEach(function(row) {
+    validateQboPostFilingSalesTaxGlStructuredRawParity_(row, idx);
   });
 
   const evidenceRows = retained.map(function(row) {
@@ -285,6 +291,30 @@ function captureQboPostFilingSalesTaxGlActivityForRequest(request) {
   return captureQboPostFilingSalesTaxGlActivity(startDate, endDate, context);
 }
 
+/**
+ * Validates that structured identity fields retained from the flattened GL row
+ * agree with the preserved raw QBO row. Publication fails closed on mismatch.
+ */
+function validateQboPostFilingSalesTaxGlStructuredRawParity_(row, idx) {
+  const rawText = String(row[idx.RawRowJSON] || '').trim();
+  let raw;
+  try { raw = JSON.parse(rawText); } catch (e) {
+    throw new Error('POST_FILING_GL_RAW_ROW_JSON_INVALID: ' + e.message);
+  }
+  const col = raw && Array.isArray(raw.ColData) ? raw.ColData : [];
+  const rawType = String((col[1] || {}).value || '').trim();
+  const rawId = String((col[1] || {}).id || '').trim();
+  const structuredType = String(row[idx.TransactionType] || '').trim();
+  const structuredId = String(row[idx.TransactionId] || '').trim();
+  if (!rawType || !rawId || structuredType !== rawType || structuredId !== rawId) {
+    throw new Error(
+      'POST_FILING_GL_STRUCTURED_RAW_IDENTITY_MISMATCH: structuredType=' + structuredType +
+      ' rawType=' + rawType + ' structuredId=' + structuredId + ' rawId=' + rawId
+    );
+  }
+  return true;
+}
+
 /** Read-only contract test; no QBO call and no Drive artifact. */
 function testQboPostFilingSalesTaxGlActivityContract() {
   const checks = [];
@@ -300,6 +330,15 @@ function testQboPostFilingSalesTaxGlActivityContract() {
   check('SEPARATE_EVIDENCE_TYPE', QBO_POST_FILING_SALES_TAX_GL.EVIDENCE_TYPE === 'POST_FILING_GL_ACTIVITY', QBO_POST_FILING_SALES_TAX_GL.EVIDENCE_TYPE);
   check('NO_APP21_FILING_ASSET_KNOWLEDGE', !QBO_POST_FILING_SALES_TAX_GL.FILING_DATA_ASSET_KEY, 'caller owns filing source');
   check('NO_APP21_SHEET_KNOWLEDGE', !QBO_POST_FILING_SALES_TAX_GL.FILING_CONFIRMATIONS_SHEET, 'caller owns filing schema');
+
+  const testIdx = {TransactionType:0, TransactionId:1, RawRowJSON:2};
+  const goodRaw = JSON.stringify({ColData:[{value:'2026-09-19'},{value:'Sales Tax Adjustment',id:'70002'}],type:'Data'});
+  let goodParity = false;
+  try { goodParity = validateQboPostFilingSalesTaxGlStructuredRawParity_(['Sales Tax Adjustment','70002',goodRaw], testIdx); } catch (e) {}
+  check('STRUCTURED_RAW_PARITY_ACCEPTS_MATCH', goodParity === true, '');
+  let mismatchFailedClosed = false;
+  try { validateQboPostFilingSalesTaxGlStructuredRawParity_(['','70002',goodRaw], testIdx); } catch (e) { mismatchFailedClosed = String(e.message).indexOf('STRUCTURED_RAW_IDENTITY_MISMATCH') >= 0; }
+  check('STRUCTURED_RAW_PARITY_FAILS_CLOSED', mismatchFailedClosed, '');
 
   const failed = checks.filter(function(x){return !x.pass;});
   const result = {version:QBO_POST_FILING_SALES_TAX_GL_VERSION, pass:failed.length===0, passed:checks.length-failed.length, total:checks.length, checks:checks};

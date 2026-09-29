@@ -1455,16 +1455,28 @@ function applyQboGeneralLedgerPeriodFormats_(sheet, startRow, rowCount) {
 
 function appendQboGeneralLedgerRun_(spreadsheet, row) {
   const sheet = spreadsheet.getSheetByName(QBO_GENERAL_LEDGER_REPORT.RUNS_SHEET);
+  if (row.length !== QBO_GENERAL_LEDGER_RUN_HEADERS.length) {
+    throw new Error('GL_RUN_REGISTRY_ROW_WIDTH_INVALID: expected=' + QBO_GENERAL_LEDGER_RUN_HEADERS.length + ' actual=' + row.length);
+  }
+  if (!(row[1] instanceof Date) || isNaN(row[1].getTime())) {
+    throw new Error('GL_RUN_REGISTRY_EXTRACTED_AT_INVALID');
+  }
   if (sheet.getLastRow() === 0) {
     sheet.getRange(1, 1, 1, QBO_GENERAL_LEDGER_RUN_HEADERS.length)
       .setValues([QBO_GENERAL_LEDGER_RUN_HEADERS.slice()])
       .setFontWeight('bold');
     sheet.setFrozenRows(1);
   }
-  sheet.getRange(sheet.getLastRow() + 1, 1, 1, row.length).setValues([row]);
+  const targetRow = sheet.getLastRow() + 1;
+  sheet.getRange(targetRow, 1, 1, row.length).setValues([row]);
+  const storedExtractedAt = sheet.getRange(targetRow, 2).getValue();
+  if (!(storedExtractedAt instanceof Date) || storedExtractedAt.getTime() !== row[1].getTime()) {
+    throw new Error('GL_RUN_REGISTRY_EXTRACTED_AT_WRITE_MISMATCH: run=' + String(row[0] || ''));
+  }
   sheet.getRange(2, 2, Math.max(1, sheet.getLastRow() - 1), 1)
     .setNumberFormat('yyyy-mm-dd hh:mm:ss');
 }
+
 
 function createQboGeneralLedgerSnapshot_(spreadsheet, startDate, endDate) {
   const props = PropertiesService.getScriptProperties();
@@ -1491,3 +1503,4 @@ function createQboGeneralLedgerSnapshot_(spreadsheet, startDate, endDate) {
   );
   return { fileId: copy.getId(), fileName: copy.getName() };
 }
+
