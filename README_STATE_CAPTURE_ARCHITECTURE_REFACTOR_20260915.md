@@ -1259,3 +1259,170 @@ plus the exact forward-ingestion and historical-to-forward continuity impact map
 This README records the architecture/refactor decisions and implementation state agreed through 2026-09-15. It is intended to survive chat/session loss and serve as the durable handoff for continuing the App 50 repair.
 
 If later implementation evidence requires changing one of these contracts, change it deliberately, document the reason and migration impact, and version the decision. Do not silently revert to an older ingestion or orchestration path.
+
+### Observation-level chronology bridge — LOCKED 2026-09-17
+
+`05` remains source/work-unit ingestion control and does **not** carry `ObservedAt`.
+`06_Payload_Artifacts` remains physical artifact authority; artifact timestamps,
+row order, shard order, and ingestion order do **not** establish business chronology.
+
+`07_Observation_Index` is one durable row per logical `ObservationId` between 06
+and State Application. It carries entity identity, `ObservedAt`, source lineage,
+source-reported change metadata, and an exact immutable-payload pointer.
+
+`SourceOperation` is explicitly **source evidence**, such as CREATE, UPDATE,
+DELETE, or webhook EMAILED. It does not mean State Application determined that
+business state changed. 07 does not duplicate normalized/canonical entity state
+and does not store derived business-change details.
+
+```text
+05 source/work-unit ingestion control
+→ Change Payloads
+→ 06 physical payload-artifact authority
+→ 07 logical observation index
+→ State Application
+→ 13 Snapshot_Observations assignment ledger
+→ 10 Snapshot_Records
+→ 11 Change_Records
+→ 12 Change_Detail
+```
+
+State Application partitions admitted observations by `EntityType + EntityId`,
+orders each entity by `ObservedAt`, and applies governed equal-time resolution.
+Payload/file/ingestion ordering is never a chronology tie breaker.
+
+```text
+05.ExpectedObservationCount
+= 05.ProcessedObservationCount
+= Σ 06.ObservationCount
+= Σ 06.PayloadCount
+= COUNT(DISTINCT 07.ObservationId for IngestionSourceId)
+```
+
+07 records observation admission, chronology identity, source-reported operation,
+and evidence location. 13 records the later State Application assignment decision.
+Actual canonical state belongs in 10; actual derived transitions and field-level
+differences belong in 11 and 12.
+
+
+### FULL_EXPORT ObservedAt semantics — LOCKED 2026-09-17
+
+`ObservedAt` is evidence-capture chronology. For every FULL_EXPORT observation,
+`ObservedAt` MUST equal `ObservationCompletedAt` from the exact FULL_EXPORT source
+lineage / run-history capture represented by that observation. This remains true
+for both historical reconstruction and forward ingestion, even when Change Payload
+creation is delayed by minutes, hours, or days.
+
+QBO `MetaData.LastUpdatedTime` is retained as `SourceChangeTime` /
+`QboLastUpdatedTime`. It is supporting source-reported change/version evidence and
+MUST NOT replace FULL_EXPORT `ObservedAt`. Using LastUpdatedTime as ObservedAt could
+place a later-captured FULL_EXPORT state before CDC/webhook evidence that Pool People
+actually captured earlier.
+
+Repeated FULL_EXPORT observations with later `ObservedAt` but the same canonical
+`NormalizedStateHash` are corroborating observations, not business-state changes.
+`LastUpdatedTime` may support that determination, but State Application determines
+actual canonical state change from governed canonical state/hash comparison.
+
+`PayloadCreatedAt`, `PersistedAt`, `IndexedAt`, ingestion time, payload order, and
+06 row order are processing provenance only and MUST NEVER substitute for
+FULL_EXPORT `ObservedAt`.
+
+The historical 07 backfill fails closed if a FULL_EXPORT payload's `observedAt`
+does not equal the exact `01_Sources.ObservationCompletedAt` for its
+`IngestionSourceId`.
+
+
+## v1.5.173 — Observation Index physical storage architecture lock (2026-09-17)
+
+Production historical 07 indexing proved that the combined `QBO State Capture`
+Google workbook cannot be the durable row-level Observation Index authority.
+At artifact cursor 1137 / 3455, with 201,614 indexed observations, Google Sheets
+refused further growth because the workbook would exceed 10,000,000 cells.
+
+The logical `07_Observation_Index` V1 contract is preserved. Physical authority
+moves to immutable deterministic Drive JSON Observation Index shards plus a
+compact shard/entity lookup surface. State Application must resolve the relevant
+logical 07 records for `EntityType + EntityId`, verify their physical lineage,
+order those observations by `ObservedAt`, resolve governed equal-time evidence,
+and only then apply State Application rules. Shard order, file order, manifest
+order, ingestion order, and index-write order are never chronology.
+
+The existing 201,614 legacy-sheet rows and v1.5.172 checkpoint at artifact 1137
+must be preserved until controlled shard migration is independently verified.
+The historical run is not to be restarted from artifact zero.
+
+v1.5.173 is contract + read-only migration preflight only. It does not create
+the shard store, migrate rows, resume the backfill, mutate triggers, or alter
+State Application.
+
+
+## v1.5.174 — Observation Index shard storage provisioning (2026-09-17)
+
+Physical 07 storage is provisioned beneath the already-governed
+`QBO_CHANGE_PAYLOADS_FOLDER`. Three exact implementation containers are used:
+
+- `Observation Index Shards`
+- `Observation Index Manifests`
+- `Observation Index Lookup`
+
+Provisioning refuses duplicate same-name child folders and creates only missing
+containers. v1.5.174 creates no observation shard files, manifest data files, or
+lookup data files; it does not migrate the 201,614 legacy 07 rows and does not
+resume the failed historical backfill.
+
+The separation is intentional:
+- Shards = immutable logical-07 record storage.
+- Manifests = compact physical shard authority / integrity metadata.
+- Lookup = scalable entity-to-shard discovery structures for State Application.
+
+State Application never treats folder/file/shard/manifest order as chronology.
+It resolves relevant records for EntityType + EntityId and orders by ObservedAt.
+
+
+## v1.5.175 — Controlled legacy 07 → immutable shard migration (2026-09-17)
+
+The 201,614 observations already committed to the legacy Google Sheet at the
+v1.5.172 failure checkpoint are migrated without changing or deleting that
+source sheet and without restarting historical indexing from artifact zero.
+
+Migration is bounded/resumable. Each deterministic 2,000-observation migration
+unit commits in this order:
+
+1. immutable logical-07 shard JSON;
+2. immutable shard manifest JSON;
+3. immutable entity lookup-segment JSON;
+4. durable migration checkpoint.
+
+On retry, deterministic filenames and content hashes reconcile already-created
+artifacts rather than duplicate them.
+
+Each lookup segment groups `EntityType + EntityId` and records the ordinals for
+that entity inside the corresponding shard plus min/max ObservedAt. These
+segments are derivative discovery evidence, not chronology. A later compact
+lookup catalog can be built from them without rereading payload evidence.
+
+The final migration gate requires:
+- manifest observation total = 201,614;
+- distinct sharded ObservationIds = 201,614;
+- every manifest-referenced shard content hash verifies;
+- legacy 07 rows remain preserved;
+- legacy 07 is not yet retired as authority;
+- the historical 06→07 backfill remains stopped at artifact 1,137.
+
+Only after this migration is independently validated will the historical writer
+be changed to the shard model and resumed from artifact 1,137.
+
+
+## v1.5.176 — Legacy 07 migration schema-gate repair (2026-09-17)
+
+The first v1.5.175 start failed safely at cursor 0 before any shard, manifest, or
+lookup file was created. Root cause: the worker treated the internal v1.5.169
+schema helper as though it returned a top-level `valid` boolean. The helper is
+findings-oriented; the runtime result was therefore interpreted as invalid even
+with `findings=[]`.
+
+v1.5.176 changes only that gate: an empty schema findings array passes; any
+finding still fails closed. The existing v1.5.175 migration state/run identity
+is deliberately retained so recovery continues the same controlled migration
+rather than creating a replacement run.

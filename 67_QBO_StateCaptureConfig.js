@@ -99,7 +99,8 @@ const QBO_STATE_CAPTURE_HEADERS = Object.freeze({
     'RegisteredAt',
     'ProcessedAt',
     'ProcessingStatus',
-    'ProcessingError'
+    'ProcessingError',
+    'ObservationCount'
   ]),
   STATES: Object.freeze([
     'CaptureId',
