@@ -1,12 +1,12 @@
 /**
- * Governed App 50 processor for App 21 sales-tax pre-filing QBO capture requests.
+ * Governed App 50 processor for App 21 sales-tax QBO capture requests. Version 1.5.200.
  * App 50 owns all QBO/report acquisition. The shared request ledger is the
  * cross-project request/response boundary; App 21 performs final registry binding.
  */
 const QBO_PREFILING_CAPTURE = Object.freeze({
   SHEET_NAME: '04_QBO_Capture_Requests',
   HEADERS: Object.freeze([
-    'QBO_Capture_Request_ID','PreFiling_Run_ID','Period_Key','Period_Start','Period_End',
+    'QBO_Capture_Request_ID','Capture_Context_Type','Capture_Context_ID','PreFiling_Run_ID','Period_Key','Period_Start','Period_End',
     'Requested_At','Request_Status','Processing_Started_At','Completed_At',
     'GL_ExtractRunId','GL_SnapshotFileId','Taxable_Sales_Detail_Workbook_File_ID','Taxable_Sales_Detail_Snapshot_Run_ID','Taxable_Sales_Detail_Snapshot_Sequence',
     'Sales_Tax_Recognition_Workbook_File_ID','Sales_Tax_Recognition_Snapshot_Run_ID','Sales_Tax_Recognition_Snapshot_Sequence','Sales_Tax_Recognition_Source_GL_ExtractRunId',
@@ -22,6 +22,10 @@ const QBO_PREFILING_CAPTURE = Object.freeze({
  * exactly one REQUESTED capture, logs its exact identity/period, and delegates
  * to the governed parameterized processor.
  */
+function processLatestRequestedSalesTaxQboCapture() {
+  return processLatestRequestedSalesTaxPreFilingCapture();
+}
+
 function processLatestRequestedSalesTaxPreFilingCapture() {
   const controlAssetKey = 'SALES_TAX_RECONCILIATION_CONTROL';
 
@@ -82,6 +86,8 @@ function processLatestRequestedSalesTaxPreFilingCapture() {
 
   safeLog_('[PREFILING QBO CAPTURE] | SELECTED | ' + JSON.stringify({
     QBO_Capture_Request_ID: String(selected.QBO_Capture_Request_ID || ''),
+    Capture_Context_Type: String(selected.Capture_Context_Type || ''),
+    Capture_Context_ID: String(selected.Capture_Context_ID || ''),
     PreFiling_Run_ID: String(selected.PreFiling_Run_ID || ''),
     Period_Key: String(selected.Period_Key || ''),
     Period_Start: qboPreFilingNormalizeDate_(selected.Period_Start),
@@ -241,35 +247,51 @@ function qboPreFilingNormalizeDate_(value) {
   return s;
 }
 
+function qboPreFilingCaptureContext_(r) {
+  let type=String(r.Capture_Context_Type||'').trim().toUpperCase();
+  let id=String(r.Capture_Context_ID||'').trim();
+  const pre=String(r.PreFiling_Run_ID||'').trim();
+  if(!type && pre){type='PREFILING';id=id||pre;}
+  if(['PREFILING','CURRENT_ASOF'].indexOf(type)<0) throw new Error('QBO_CAPTURE_CONTEXT_TYPE_INVALID: '+type);
+  if(!id) throw new Error('QBO_CAPTURE_CONTEXT_ID_REQUIRED');
+  if(type==='PREFILING'){
+    if(!pre) throw new Error('PREFILING_RUN_ID_REQUIRED');
+    if(id!==pre) throw new Error('QBO_CAPTURE_CONTEXT_ID_MISMATCH');
+  } else if(pre) throw new Error('CURRENT_ASOF_PREFILING_RUN_ID_FORBIDDEN');
+  return {type:type,id:id};
+}
+
 function qboPreFilingValidateRequest_(r) {
-  ['QBO_Capture_Request_ID','PreFiling_Run_ID','Period_Key','Period_Start','Period_End'].forEach(h => {
-    if (!String(r[h] || '').trim()) throw new Error('PREFILING_QBO_CAPTURE_REQUEST_FIELD_MISSING: ' + h);
+  qboPreFilingCaptureContext_(r);
+  ['QBO_Capture_Request_ID','Period_Key','Period_Start','Period_End'].forEach(h => {
+    if (!String(r[h] || '').trim()) throw new Error('QBO_CAPTURE_REQUEST_FIELD_MISSING: ' + h);
   });
-  if (!/^\d{4}$/.test(String(r.Period_Key || ''))) throw new Error('PREFILING_QBO_CAPTURE_PERIOD_KEY_INVALID');
-  const periodStart = qboPreFilingNormalizeDate_(r.Period_Start);
-  const periodEnd = qboPreFilingNormalizeDate_(r.Period_End);
-  const startMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(periodStart);
-  const endMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(periodEnd);
-  if (!startMatch || !endMatch) throw new Error('PREFILING_QBO_CAPTURE_PERIOD_DATE_INVALID');
-  const expectedKey = startMatch[1].slice(2) + startMatch[2];
-  if (expectedKey !== String(r.Period_Key || '')) throw new Error('PREFILING_QBO_CAPTURE_PERIOD_MISMATCH');
-  if (startMatch[1] !== endMatch[1] || startMatch[2] !== endMatch[2]) {
-    throw new Error('PREFILING_QBO_CAPTURE_PERIOD_RANGE_MISMATCH');
-  }
+  if (!/^\d{4}$/.test(String(r.Period_Key || ''))) throw new Error('QBO_CAPTURE_PERIOD_KEY_INVALID');
+  const periodStart=qboPreFilingNormalizeDate_(r.Period_Start),periodEnd=qboPreFilingNormalizeDate_(r.Period_End);
+  const startMatch=/^(\d{4})-(\d{2})-(\d{2})$/.exec(periodStart),endMatch=/^(\d{4})-(\d{2})-(\d{2})$/.exec(periodEnd);
+  if(!startMatch||!endMatch) throw new Error('QBO_CAPTURE_PERIOD_DATE_INVALID');
+  const expectedKey=startMatch[1].slice(2)+startMatch[2];
+  if(expectedKey!==String(r.Period_Key||'')) throw new Error('QBO_CAPTURE_PERIOD_MISMATCH');
+  if(startMatch[1]!==endMatch[1]||startMatch[2]!==endMatch[2]) throw new Error('QBO_CAPTURE_PERIOD_RANGE_MISMATCH');
 }
 
 function testSalesTaxPreFilingCaptureRequestContract() {
   qboPreFilingValidateRequest_({
-    QBO_Capture_Request_ID:'r1', PreFiling_Run_ID:'p1', Period_Key:'2608',
-    Period_Start:'2026-08-01', Period_End:'2026-08-31'
+    QBO_Capture_Request_ID:'r1',Capture_Context_Type:'PREFILING',Capture_Context_ID:'p1',
+    PreFiling_Run_ID:'p1',Period_Key:'2608',Period_Start:'2026-08-01',Period_End:'2026-08-31'
   });
-  let blocked = false;
-  try { qboPreFilingValidateRequest_({QBO_Capture_Request_ID:'r1',PreFiling_Run_ID:'p1',Period_Key:'2607',Period_Start:'2026-08-01',Period_End:'2026-08-31'}); }
-  catch (e) { blocked = true; }
-  if (!blocked) throw new Error('period mismatch was not blocked');
-  const result = {Suite:'SalesTaxPreFilingCaptureRequestContract',checkCount:2,passed:true};
-  safeLog_(JSON.stringify(result));
-  return result;
+  qboPreFilingValidateRequest_({
+    QBO_Capture_Request_ID:'r2',Capture_Context_Type:'CURRENT_ASOF',Capture_Context_ID:'c1',
+    PreFiling_Run_ID:'',Period_Key:'2607',Period_Start:'2026-07-01',Period_End:'2026-07-31'
+  });
+  let blocked=false;
+  try{qboPreFilingValidateRequest_({QBO_Capture_Request_ID:'r3',Capture_Context_Type:'CURRENT_ASOF',Capture_Context_ID:'c1',PreFiling_Run_ID:'p1',Period_Key:'2607',Period_Start:'2026-07-01',Period_End:'2026-07-31'});}catch(e){blocked=true;}
+  if(!blocked) throw new Error('CURRENT_ASOF_PREFILING_RUN_ID_WAS_NOT_BLOCKED');
+  blocked=false;
+  try{qboPreFilingValidateRequest_({QBO_Capture_Request_ID:'r4',Capture_Context_Type:'PREFILING',Capture_Context_ID:'p1',PreFiling_Run_ID:'p1',Period_Key:'2607',Period_Start:'2026-08-01',Period_End:'2026-08-31'});}catch(e){blocked=true;}
+  if(!blocked) throw new Error('period mismatch was not blocked');
+  const result={Version:'1.5.198',Suite:'SalesTaxCaptureRequestContextContract',checkCount:4,passed:true};
+  safeLog_(JSON.stringify(result));return result;
 }
 
 /**
@@ -435,6 +457,104 @@ function qboPreFilingEvidencePeriodKey_(periodStart, requestPeriodKey){
 }
 function qboPreFilingAssertSnapshotExists_(ss,sn,pk,rid,seq,label){rid=String(rid||'').trim();seq=Number(seq);if(!rid||!seq)throw new Error(label+'_BOUND_SNAPSHOT_IDENTITY_MISSING');const sh=ss.getSheetByName(sn);if(!sh||sh.getLastRow()<2)throw new Error(label+'_SNAPSHOT_SHEET_EMPTY');const v=sh.getDataRange().getValues(),h=v[0].map(x=>String(x||'').trim()),p=h.indexOf('Period_Key'),q=h.indexOf('Snapshot_Sequence'),r=h.indexOf('Snapshot_Run_ID');if(p<0||q<0||r<0)throw new Error(label+'_SNAPSHOT_CONTRACT_INVALID');if(!v.slice(1).some(x=>String(x[p]||'').trim()===String(pk||'').trim()&&Number(x[q])===seq&&String(x[r]||'').trim()===rid))throw new Error(label+'_BOUND_SNAPSHOT_NOT_FOUND');return true;}
 
+
+
+/**
+ * Governed recovery for the Sep 30 2607 CURRENT_ASOF capture interrupted after
+ * GL and Taxable Sales Detail completed but before the Apps Script invocation
+ * could persist the Taxable Sales Detail checkpoint / start Recognition.
+ *
+ * This wrapper is intentionally exact and one-time: it refuses a different
+ * request/context/period, refuses conflicting checkpoints, verifies the exact
+ * completed GL snapshot and Taxable Sales Detail snapshot evidence, binds only
+ * those completed stages, then resumes the same request through the normal
+ * processor. It creates no new request and does not recapture GL/TSD.
+ */
+function recover2607CurrentAsOfCaptureAfterSep30Interruption() {
+  const requestId='be65656c-4a90-4f45-b4f9-fd2a399a7dcb';
+  const contextId='71379c6e-4997-4a3e-84ae-ec879e873585';
+  const glRunId='6c6c3ac1-9d72-4522-af43-84de13ba1e54';
+  const glSnapshotFileId='1XsILlyOF5LJCGPVyZCahQL2Kl7w78VI5-rncU0SZ62g';
+  const taxableWorkbookFileId='1va3zAyLnNAD1Z-_Lmw8vm0ATEVZ4HEbAB3kIVY5zqg8';
+  const taxableRunId='bfad7336-e670-4132-93dc-818fe379c954';
+  const taxableSequence=4;
+  const controlAssetKey='SALES_TAX_RECONCILIATION_CONTROL';
+
+  const asset=DataPlatform05.getConfiguredAssetReference(controlAssetKey,'Spreadsheet','PROD');
+  const controlSpreadsheetId=String(asset && asset.ResourceIdentifier || '').trim();
+  if(!controlSpreadsheetId) throw new Error('CURRENT_ASOF_RECOVERY_CONTROL_ASSET_MISSING');
+  const ss=SpreadsheetApp.openById(controlSpreadsheetId);
+  const sheet=ss.getSheetByName(QBO_PREFILING_CAPTURE.SHEET_NAME);
+  if(!sheet) throw new Error('CURRENT_ASOF_RECOVERY_LEDGER_MISSING');
+  const state=qboPreFilingReadLedger_(sheet);
+  const index=qboPreFilingFindRequest_(state.rows,requestId);
+  const request=state.rows[index];
+
+  if(String(request.Capture_Context_Type||'').trim()!=='CURRENT_ASOF') throw new Error('CURRENT_ASOF_RECOVERY_CONTEXT_TYPE_MISMATCH');
+  if(String(request.Capture_Context_ID||'').trim()!==contextId) throw new Error('CURRENT_ASOF_RECOVERY_CONTEXT_ID_MISMATCH');
+  if(String(request.Period_Key||'').trim()!=='2607') throw new Error('CURRENT_ASOF_RECOVERY_PERIOD_MISMATCH');
+  const status=String(request.Request_Status||'').trim();
+  if(['PROCESSING','FAILED'].indexOf(status)<0) throw new Error('CURRENT_ASOF_RECOVERY_STATUS_NOT_ALLOWED: '+status);
+
+  qboRecoveryAssertBlankOrExact_(request.GL_ExtractRunId,glRunId,'GL_ExtractRunId');
+  qboRecoveryAssertBlankOrExact_(request.GL_SnapshotFileId,glSnapshotFileId,'GL_SnapshotFileId');
+  qboRecoveryAssertBlankOrExact_(request.Taxable_Sales_Detail_Workbook_File_ID,taxableWorkbookFileId,'Taxable_Sales_Detail_Workbook_File_ID');
+  qboRecoveryAssertBlankOrExact_(request.Taxable_Sales_Detail_Snapshot_Run_ID,taxableRunId,'Taxable_Sales_Detail_Snapshot_Run_ID');
+  qboRecoveryAssertBlankOrExact_(request.Taxable_Sales_Detail_Snapshot_Sequence,taxableSequence,'Taxable_Sales_Detail_Snapshot_Sequence');
+  if(String(request.Sales_Tax_Recognition_Snapshot_Run_ID||'').trim()) throw new Error('CURRENT_ASOF_RECOVERY_RECOGNITION_ALREADY_BOUND');
+
+  const glFile=DriveApp.getFileById(glSnapshotFileId);
+  if(!glFile || glFile.isTrashed()) throw new Error('CURRENT_ASOF_RECOVERY_GL_SNAPSHOT_NOT_AVAILABLE');
+  const taxableFile=DriveApp.getFileById(taxableWorkbookFileId);
+  if(!taxableFile || taxableFile.isTrashed()) throw new Error('CURRENT_ASOF_RECOVERY_TAXABLE_WORKBOOK_NOT_AVAILABLE');
+  qboRecoveryAssertSnapshotIdentityAnywhere_(taxableWorkbookFileId,'202607',taxableRunId,taxableSequence);
+
+  request.GL_ExtractRunId=glRunId;
+  request.GL_SnapshotFileId=glSnapshotFileId;
+  request.Taxable_Sales_Detail_Workbook_File_ID=taxableWorkbookFileId;
+  request.Taxable_Sales_Detail_Snapshot_Run_ID=taxableRunId;
+  request.Taxable_Sales_Detail_Snapshot_Sequence=taxableSequence;
+  request.Request_Status='FAILED';
+  request.Error_Code='RECOVERABLE_INTERRUPTION_AFTER_TAXABLE_SALES_DETAIL';
+  request.Error_Message='Sep 30 invocation ended after GL and Taxable Sales Detail completed; exact completed-stage checkpoints recovered from execution evidence.';
+  request.Last_Updated_At=new Date();
+  state.rows[index]=request;
+  qboPreFilingWriteLedger_(sheet,state.rows);
+
+  safeLog_('[PREFILING QBO CAPTURE] | CURRENT_ASOF RECOVERY CHECKPOINTS BOUND | '+JSON.stringify({
+    QBO_Capture_Request_ID:requestId,
+    Capture_Context_ID:contextId,
+    GL_ExtractRunId:glRunId,
+    Taxable_Sales_Detail_Snapshot_Run_ID:taxableRunId,
+    Taxable_Sales_Detail_Snapshot_Sequence:taxableSequence
+  }));
+
+  return processSalesTaxPreFilingCaptureRequest(controlSpreadsheetId,requestId);
+}
+
+function qboRecoveryAssertBlankOrExact_(actual,expected,label) {
+  const a=String(actual===undefined||actual===null?'':actual).trim();
+  const e=String(expected).trim();
+  if(a && a!==e) throw new Error('CURRENT_ASOF_RECOVERY_CONFLICT_'+label+': '+a);
+}
+
+function qboRecoveryAssertSnapshotIdentityAnywhere_(spreadsheetId,periodKey,runId,sequence) {
+  const ss=SpreadsheetApp.openById(spreadsheetId);
+  const pk=String(periodKey||'').trim(), rid=String(runId||'').trim(), seq=Number(sequence);
+  let found=false;
+  ss.getSheets().some(sh=>{
+    const values=sh.getDataRange().getValues();
+    if(values.length<2) return false;
+    const h=values[0].map(v=>String(v||'').trim());
+    const p=h.indexOf('Period_Key'), r=h.indexOf('Snapshot_Run_ID'), q=h.indexOf('Snapshot_Sequence');
+    if(p<0||r<0||q<0) return false;
+    found=values.slice(1).some(row=>String(row[p]||'').trim()===pk && String(row[r]||'').trim()===rid && Number(row[q])===seq);
+    return found;
+  });
+  if(!found) throw new Error('CURRENT_ASOF_RECOVERY_TAXABLE_SNAPSHOT_IDENTITY_NOT_FOUND');
+  return true;
+}
+
 /**
  * One-time governed recovery for the Sep 18 failed August capture that completed
  * GL and Taxable Sales Detail before checkpoint persistence existed. It binds the
@@ -463,4 +583,87 @@ function recoverSep18AugustPreFilingCaptureFromCompletedStages() {
   state.rows[index]=request; qboPreFilingWriteLedger_(sheet,state.rows);
   safeLog_('[PREFILING QBO CAPTURE] | RECOVERY CHECKPOINTS BOUND | request='+requestId);
   return retryLatestFailedSalesTaxPreFilingCapture();
+}
+
+
+/** v1.5.198 pure capture-context/header contract test; no production writes. */
+function testSalesTaxCaptureContextHeaderContract() {
+  const h=QBO_PREFILING_CAPTURE.HEADERS.slice();
+  const checks=[
+    h.indexOf('Capture_Context_Type')===1,
+    h.indexOf('Capture_Context_ID')===2,
+    h.indexOf('PreFiling_Run_ID')===3,
+    h.length===23,
+    qboPreFilingCaptureContext_({Capture_Context_Type:'PREFILING',Capture_Context_ID:'P1',PreFiling_Run_ID:'P1'}).type==='PREFILING',
+    qboPreFilingCaptureContext_({Capture_Context_Type:'CURRENT_ASOF',Capture_Context_ID:'C1',PreFiling_Run_ID:''}).type==='CURRENT_ASOF'
+  ];
+  let blocked=false;try{qboPreFilingCaptureContext_({Capture_Context_Type:'CURRENT_ASOF',Capture_Context_ID:'C1',PreFiling_Run_ID:'P1'});}catch(e){blocked=true;}
+  checks.push(blocked);
+  const result={Version:'1.5.198',Suite:'SalesTaxCaptureContextHeaderContract',checkCount:checks.length,passed:checks.every(Boolean)};
+  if(!result.passed)throw new Error('QBO_CAPTURE_CONTEXT_HEADER_CONTRACT_TEST_FAILED');
+  safeLog_(JSON.stringify(result));return result;
+}
+
+
+/**
+ * Read-only inspection of the completed 2607 CURRENT_ASOF capture.
+ * Verifies the exact request identity, all persisted evidence bindings,
+ * physical snapshot existence, and Recognition -> GL lineage. No writes.
+ */
+function inspect2607CurrentAsOfCompletedCapture() {
+  const requestId = 'be65656c-4a90-4f45-b4f9-fd2a399a7dcb';
+  const contextId = '71379c6e-4997-4a3e-84ae-ec879e873585';
+  const asset = DataPlatform05.getConfiguredAssetReference('SALES_TAX_RECONCILIATION_CONTROL','Spreadsheet','PROD');
+  const controlId = String(asset && asset.ResourceIdentifier || '').trim();
+  if (!controlId) throw new Error('CURRENT_ASOF_INSPECT_CONTROL_ASSET_MISSING');
+  const control = SpreadsheetApp.openById(controlId);
+  const sheet = control.getSheetByName(QBO_PREFILING_CAPTURE.SHEET_NAME);
+  if (!sheet) throw new Error('CURRENT_ASOF_INSPECT_LEDGER_MISSING');
+  const state = qboPreFilingReadLedger_(sheet);
+  const idx = qboPreFilingFindRequest_(state.rows, requestId);
+  const r = state.rows[idx];
+  if (String(r.Capture_Context_Type || '').trim() !== 'CURRENT_ASOF') throw new Error('CURRENT_ASOF_INSPECT_CONTEXT_TYPE_MISMATCH');
+  if (String(r.Capture_Context_ID || '').trim() !== contextId) throw new Error('CURRENT_ASOF_INSPECT_CONTEXT_ID_MISMATCH');
+  if (String(r.Period_Key || '').trim() !== '2607') throw new Error('CURRENT_ASOF_INSPECT_PERIOD_MISMATCH');
+  if (String(r.Request_Status || '').trim() !== 'COMPLETE') throw new Error('CURRENT_ASOF_INSPECT_NOT_COMPLETE: ' + String(r.Request_Status || ''));
+
+  const periodKey = qboPreFilingEvidencePeriodKey_(r.Period_Start, r.Period_Key);
+  const glRun = String(r.GL_ExtractRunId || '').trim();
+  const glFileId = String(r.GL_SnapshotFileId || '').trim();
+  const tdFileId = String(r.Taxable_Sales_Detail_Workbook_File_ID || '').trim();
+  const tdRun = String(r.Taxable_Sales_Detail_Snapshot_Run_ID || '').trim();
+  const tdSeq = Number(r.Taxable_Sales_Detail_Snapshot_Sequence || 0);
+  const recFileId = String(r.Sales_Tax_Recognition_Workbook_File_ID || '').trim();
+  const recRun = String(r.Sales_Tax_Recognition_Snapshot_Run_ID || '').trim();
+  const recSeq = Number(r.Sales_Tax_Recognition_Snapshot_Sequence || 0);
+  const recGl = String(r.Sales_Tax_Recognition_Source_GL_ExtractRunId || '').trim();
+  if (!glRun || !glFileId || !tdFileId || !tdRun || !tdSeq || !recFileId || !recRun || !recSeq || !recGl) {
+    throw new Error('CURRENT_ASOF_INSPECT_COMPLETE_ROW_MISSING_EVIDENCE_BINDING');
+  }
+  if (recGl !== glRun) throw new Error('CURRENT_ASOF_INSPECT_RECOGNITION_GL_LINEAGE_MISMATCH');
+
+  const glFile = DriveApp.getFileById(glFileId);
+  if (!glFile || glFile.isTrashed()) throw new Error('CURRENT_ASOF_INSPECT_GL_SNAPSHOT_UNAVAILABLE');
+  const tdFile = DriveApp.getFileById(tdFileId);
+  if (!tdFile || tdFile.isTrashed()) throw new Error('CURRENT_ASOF_INSPECT_TAXABLE_WORKBOOK_UNAVAILABLE');
+  const recFile = DriveApp.getFileById(recFileId);
+  if (!recFile || recFile.isTrashed()) throw new Error('CURRENT_ASOF_INSPECT_RECOGNITION_WORKBOOK_UNAVAILABLE');
+
+  const tdSs = SpreadsheetApp.openById(tdFileId);
+  qboPreFilingAssertSnapshotExists_(tdSs,QBO_TAXABLE_SALES_DETAIL.SNAPSHOT_SHEET,periodKey,tdRun,tdSeq,'TAXABLE_SALES_DETAIL');
+  const recSs = SpreadsheetApp.openById(recFileId);
+  qboPreFilingAssertSnapshotExists_(recSs,QBO_SALES_TAX_RECOGNITION.SNAPSHOT_SHEET,periodKey,recRun,recSeq,'SALES_TAX_RECOGNITION');
+
+  const result = {
+    Version:'1.5.200', Status:'PASS', Read_Only:true, Mutation_Performed:false,
+    QBO_Capture_Request_ID:requestId, Capture_Context_Type:'CURRENT_ASOF', Capture_Context_ID:contextId,
+    Period_Key:String(r.Period_Key || ''), Request_Status:String(r.Request_Status || ''),
+    Processing_Started_At:r.Processing_Started_At || '', Completed_At:r.Completed_At || '', Last_Updated_At:r.Last_Updated_At || '',
+    GL:{ExtractRunId:glRun,SnapshotFileId:glFileId,Physical_File_Available:true},
+    Taxable_Sales_Detail:{Workbook_File_ID:tdFileId,Snapshot_Run_ID:tdRun,Snapshot_Sequence:tdSeq,Physical_Snapshot_Verified:true},
+    Sales_Tax_Recognition:{Workbook_File_ID:recFileId,Snapshot_Run_ID:recRun,Snapshot_Sequence:recSeq,Source_GL_ExtractRunId:recGl,Physical_Snapshot_Verified:true,GL_Lineage_Matches:true},
+    Error_Code:String(r.Error_Code || ''), Error_Message:String(r.Error_Message || '')
+  };
+  safeLog_('[PREFILING QBO CAPTURE] | CURRENT_ASOF COMPLETE INSPECTION | ' + JSON.stringify(result));
+  return result;
 }
