@@ -148,8 +148,14 @@ const QBO_GENERAL_LEDGER_RUN_HEADERS = Object.freeze([
   'RowCount',
   'SpreadsheetId',
   'SnapshotFileId',
-  'SnapshotFileName'
+  'SnapshotFileName',
+  'SnapshotArtifactContract'
 ]);
+
+const QBO_GENERAL_LEDGER_SNAPSHOT_ARTIFACT_CONTRACT_V2 = 'GL_RUN_SNAPSHOT_V2';
+const QBO_GENERAL_LEDGER_LEGACY_ARTIFACT_CONTRACT_V1 = 'LEGACY_FULL_STORE_CONTAINER_V1';
+const QBO_GENERAL_LEDGER_SNAPSHOT_METADATA_SHEET = '00_Metadata';
+const QBO_GENERAL_LEDGER_SNAPSHOT_METADATA_HEADERS = Object.freeze(['Field','Value']);
 
 /**
  * Creates the dedicated General Ledger report workbook when missing.
@@ -201,6 +207,7 @@ function provisionQboGeneralLedgerReportWorkbook() {
 function bootstrapQboGeneralLedgerControl() {
   const spreadsheet = getQboGeneralLedgerReportSpreadsheet_();
   ensureQboGeneralLedgerControlSheet_(spreadsheet);
+  ensureQboGeneralLedgerRunRegistrySchemaV2_(spreadsheet);
   const settings = readQboGeneralLedgerControlSettings_();
   console.log('[GL CONTROL] | READY | ' + JSON.stringify(settings));
   return settings;
@@ -279,9 +286,16 @@ function exportQboGeneralLedgerForPeriod(startDate, endDate) {
         spreadsheet,
         rows,
         startDate,
-        endDate
+        endDate,
+        extractedAt
       );
-      snapshot = createQboGeneralLedgerSnapshot_(spreadsheet, startDate, endDate);
+      snapshot = createQboGeneralLedgerRunSnapshotV2_(
+        rows,
+        runId,
+        startDate,
+        endDate,
+        extractedAt
+      );
     }
   );
 
@@ -295,7 +309,8 @@ function exportQboGeneralLedgerForPeriod(startDate, endDate) {
     rows.length,
     spreadsheet.getId(),
     snapshot.fileId,
-    snapshot.fileName
+    snapshot.fileName,
+    snapshot.artifactContract
   ]);
 
   let comparison = null;
@@ -307,7 +322,8 @@ function exportQboGeneralLedgerForPeriod(startDate, endDate) {
         ExtractRunId: runId,
         ReportStartDate: valueOrBlank_(header.StartPeriod) || startDate,
         ReportEndDate: valueOrBlank_(header.EndPeriod) || endDate,
-        SnapshotFileId: snapshot.fileId
+        SnapshotFileId: snapshot.fileId,
+        SnapshotArtifactContract: snapshot.artifactContract
       },
       true
     );
@@ -324,6 +340,7 @@ function exportQboGeneralLedgerForPeriod(startDate, endDate) {
     spreadsheetUrl: spreadsheet.getUrl(),
     snapshotFileId: snapshot.fileId,
     snapshotFileName: snapshot.fileName,
+    snapshotArtifactContract: snapshot.artifactContract,
     storageAction: storageResult.action,
     replacedRowCount: storageResult.replacedRowCount,
     historicalPeriodCount: storageResult.periodCount,
@@ -685,6 +702,7 @@ function ensureQboGeneralLedgerWorkbookSheets_(spreadsheet) {
   });
 
   ensureQboGeneralLedgerControlSheet_(spreadsheet);
+  ensureQboGeneralLedgerRunRegistrySchemaV2_(spreadsheet);
 
   const defaultSheet = spreadsheet.getSheetByName('Sheet1');
   if (defaultSheet && spreadsheet.getSheets().length > 3 && defaultSheet.getLastRow() === 0) {
@@ -986,6 +1004,7 @@ function qboGeneralLedgerDateText_(value) {
 }
 
 function findLatestQboGeneralLedgerRunForPeriod_(spreadsheet, startDate, endDate) {
+  ensureQboGeneralLedgerRunRegistrySchemaV2_(spreadsheet);
   const sheet = spreadsheet.getSheetByName(QBO_GENERAL_LEDGER_REPORT.RUNS_SHEET);
   if (!sheet || sheet.getLastRow() < 2) return null;
   const values = sheet.getDataRange().getValues();
@@ -1454,6 +1473,7 @@ function applyQboGeneralLedgerPeriodFormats_(sheet, startRow, rowCount) {
 }
 
 function appendQboGeneralLedgerRun_(spreadsheet, row) {
+  ensureQboGeneralLedgerRunRegistrySchemaV2_(spreadsheet);
   const sheet = spreadsheet.getSheetByName(QBO_GENERAL_LEDGER_REPORT.RUNS_SHEET);
   if (row.length !== QBO_GENERAL_LEDGER_RUN_HEADERS.length) {
     throw new Error('GL_RUN_REGISTRY_ROW_WIDTH_INVALID: expected=' + QBO_GENERAL_LEDGER_RUN_HEADERS.length + ' actual=' + row.length);
@@ -1468,39 +1488,769 @@ function appendQboGeneralLedgerRun_(spreadsheet, row) {
     sheet.setFrozenRows(1);
   }
   const targetRow = sheet.getLastRow() + 1;
-  sheet.getRange(targetRow, 1, 1, row.length).setValues([row]);
-  const storedExtractedAt = sheet.getRange(targetRow, 2).getValue();
-  if (!(storedExtractedAt instanceof Date) || storedExtractedAt.getTime() !== row[1].getTime()) {
+  const extractedAt = new Date(row[1].getTime());
+  const writeRow = row.slice();
+  writeRow[1] = extractedAt; // persist provenance atomically with the registry row
+  sheet.getRange(targetRow, 1, 1, writeRow.length).setValues([writeRow]);
+  const extractedAtCell = sheet.getRange(targetRow, 2);
+  extractedAtCell.setNumberFormat('yyyy-mm-dd hh:mm:ss');
+  SpreadsheetApp.flush();
+  const storedExtractedAt = extractedAtCell.getValue();
+  if (!qboGeneralLedgerTimestampsMatchToSecond_(storedExtractedAt, extractedAt)) {
     throw new Error('GL_RUN_REGISTRY_EXTRACTED_AT_WRITE_MISMATCH: run=' + String(row[0] || ''));
   }
-  sheet.getRange(2, 2, Math.max(1, sheet.getLastRow() - 1), 1)
-    .setNumberFormat('yyyy-mm-dd hh:mm:ss');
+  return { registryRow: targetRow, extractedAt: storedExtractedAt };
+}
+
+function qboGeneralLedgerTimestampsMatchToSecond_(left, right) {
+  if (!(left instanceof Date) || isNaN(left.getTime())) return false;
+  if (!(right instanceof Date) || isNaN(right.getTime())) return false;
+  return Math.floor(left.getTime() / 1000) === Math.floor(right.getTime() / 1000);
+}
+
+function findQboGeneralLedgerRunById_(spreadsheet, extractRunId) {
+  ensureQboGeneralLedgerRunRegistrySchemaV2_(spreadsheet);
+  const sheet = spreadsheet.getSheetByName(QBO_GENERAL_LEDGER_REPORT.RUNS_SHEET);
+  if (!sheet || sheet.getLastRow() < 2) return null;
+  const values = sheet.getDataRange().getValues();
+  const headers = values[0].map(function(v) { return String(v || '').trim(); });
+  const idx = {};
+  QBO_GENERAL_LEDGER_RUN_HEADERS.forEach(function(h) { idx[h] = headers.indexOf(h); });
+  for (let i = 1; i < values.length; i++) {
+    if (String(values[i][idx.ExtractRunId] || '').trim() === String(extractRunId || '').trim()) {
+      const out = {};
+      QBO_GENERAL_LEDGER_RUN_HEADERS.forEach(function(h) { out[h] = values[i][idx[h]]; });
+      out.__RegistryRow = i + 1;
+      return out;
+    }
+  }
+  return null;
+}
+
+function findPriorQboGeneralLedgerRunForRun_(spreadsheet, currentRun) {
+  const sheet = spreadsheet.getSheetByName(QBO_GENERAL_LEDGER_REPORT.RUNS_SHEET);
+  if (!sheet || sheet.getLastRow() < 3) return null;
+  const values = sheet.getDataRange().getValues();
+  const headers = values[0].map(function(v) { return String(v || '').trim(); });
+  const idx = {};
+  QBO_GENERAL_LEDGER_RUN_HEADERS.forEach(function(h) { idx[h] = headers.indexOf(h); });
+  const currentRow = Number(currentRun && currentRun.__RegistryRow || 0);
+  const startDate = qboGeneralLedgerDateText_(currentRun && currentRun.ReportStartDate);
+  const endDate = qboGeneralLedgerDateText_(currentRun && currentRun.ReportEndDate);
+  for (let i = (currentRow ? currentRow - 2 : values.length - 1); i >= 1; i--) {
+    const row = values[i];
+    if (qboGeneralLedgerDateText_(row[idx.ReportStartDate]) === startDate &&
+        qboGeneralLedgerDateText_(row[idx.ReportEndDate]) === endDate) {
+      const out = {};
+      QBO_GENERAL_LEDGER_RUN_HEADERS.forEach(function(h) { out[h] = row[idx[h]]; });
+      out.__RegistryRow = i + 1;
+      return out;
+    }
+  }
+  return null;
 }
 
 
-function createQboGeneralLedgerSnapshot_(spreadsheet, startDate, endDate) {
+function ensureQboGeneralLedgerRunRegistrySchemaV2_(spreadsheet) {
+  const sheet = spreadsheet.getSheetByName(QBO_GENERAL_LEDGER_REPORT.RUNS_SHEET);
+  if (!sheet) throw new Error('GL_RUN_REGISTRY_SHEET_MISSING');
+  const target = QBO_GENERAL_LEDGER_RUN_HEADERS.slice();
+  const legacy = target.slice(0, target.length - 1);
+  if (sheet.getLastRow() === 0) {
+    sheet.getRange(1, 1, 1, target.length).setValues([target]).setFontWeight('bold');
+    sheet.setFrozenRows(1);
+    return { status:'INITIALIZED', addedColumns:1 };
+  }
+  const width = Math.max(sheet.getLastColumn(), legacy.length);
+  const actual = sheet.getRange(1, 1, 1, width).getDisplayValues()[0].map(function(v) { return String(v || '').trim(); });
+  const current = actual.slice(0, target.length);
+  const currentMatches = target.every(function(h, i) { return current[i] === h; });
+  if (currentMatches) return { status:'CURRENT', addedColumns:0 };
+  const legacyMatches = legacy.every(function(h, i) { return actual[i] === h; }) &&
+    actual.slice(legacy.length).every(function(v) { return v === ''; });
+  if (!legacyMatches) throw new Error('GL_RUN_REGISTRY_SCHEMA_MISMATCH');
+  if (sheet.getMaxColumns() < target.length) sheet.insertColumnsAfter(sheet.getMaxColumns(), target.length - sheet.getMaxColumns());
+  sheet.getRange(1, target.length).setValue(target[target.length - 1]).setFontWeight('bold');
+  return { status:'MIGRATED_APPEND_ONLY', addedColumns:1 };
+}
+
+function createQboGeneralLedgerRunSnapshotV2_(rows, runId, startDate, endDate, extractedAt) {
   const props = PropertiesService.getScriptProperties();
   const folderId = String(props.getProperty(SCRIPT_PROPERTY_KEYS.SNAPSHOT_FOLDER_ID) || '').trim();
   if (!folderId) {
-    throw new Error(
-      'Missing ' + SCRIPT_PROPERTY_KEYS.SNAPSHOT_FOLDER_ID +
-      '. General Ledger exports require the existing QBO snapshot folder.'
-    );
+    throw new Error('Missing ' + SCRIPT_PROPERTY_KEYS.SNAPSHOT_FOLDER_ID + '. General Ledger exports require the existing QBO snapshot folder.');
   }
+  if (!Array.isArray(rows)) throw new Error('GL_RUN_SNAPSHOT_V2_ROWS_REQUIRED');
+  if (!(extractedAt instanceof Date) || isNaN(extractedAt.getTime())) throw new Error('GL_RUN_SNAPSHOT_V2_EXTRACTED_AT_REQUIRED');
+  rows.forEach(function(row, i) {
+    if (String(row[0] || '').trim() !== String(runId || '').trim()) throw new Error('GL_RUN_SNAPSHOT_V2_RUN_ID_MISMATCH: row=' + (i + 2));
+    if (qboGeneralLedgerDateText_(row[4]) !== startDate || qboGeneralLedgerDateText_(row[5]) !== endDate) {
+      throw new Error('GL_RUN_SNAPSHOT_V2_PERIOD_MISMATCH: row=' + (i + 2));
+    }
+  });
   const folder = DriveApp.getFolderById(folderId);
-  const sourceFile = DriveApp.getFileById(spreadsheet.getId());
-  const timestamp = Utilities.formatDate(
-    new Date(),
-    Session.getScriptTimeZone() || 'America/Chicago',
-    EXPORT_SNAPSHOT.TIMESTAMP_FORMAT
-  );
-  const fileName = spreadsheet.getName() + '_' + startDate + '_to_' + endDate + '_' + timestamp;
-  const copy = sourceFile.makeCopy(fileName, folder);
-
-  safeLog_(
-    '[GL REPORT] | SNAPSHOT | COMPLETE | file=' + copy.getName() +
-    ' | id=' + copy.getId()
-  );
-  return { fileId: copy.getId(), fileName: copy.getName() };
+  const timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone() || 'America/Chicago', EXPORT_SNAPSHOT.TIMESTAMP_FORMAT);
+  const shortRun = String(runId || '').replace(/[^A-Za-z0-9]/g, '').slice(0, 12);
+  const fileName = 'QBO_GL_RUN_SNAPSHOT_V2_' + startDate + '_to_' + endDate + '_' + shortRun + '_' + timestamp;
+  const snapshot = SpreadsheetApp.create(fileName, Math.max(rows.length + 1, 2), QBO_GENERAL_LEDGER_HEADERS.length);
+  const file = DriveApp.getFileById(snapshot.getId());
+  file.moveTo(folder);
+  try {
+    const sheet = snapshot.getSheets()[0];
+    sheet.setName(QBO_GENERAL_LEDGER_REPORT.DATA_SHEET);
+    sheet.getRange(1, 1, 1, QBO_GENERAL_LEDGER_HEADERS.length).setValues([QBO_GENERAL_LEDGER_HEADERS.slice()]);
+    if (rows.length) sheet.getRange(2, 1, rows.length, QBO_GENERAL_LEDGER_HEADERS.length).setValues(rows);
+    formatExportHeader_(sheet, QBO_GENERAL_LEDGER_HEADERS.slice(), 1);
+    if (rows.length) applyQboGeneralLedgerPeriodFormats_(sheet, 2, rows.length);
+    sheet.setFrozenRows(1);
+    const metadata = snapshot.insertSheet(QBO_GENERAL_LEDGER_SNAPSHOT_METADATA_SHEET, 0);
+    const metadataRows = [
+      ['ArtifactContract', QBO_GENERAL_LEDGER_SNAPSHOT_ARTIFACT_CONTRACT_V2],
+      ['ExtractRunId', String(runId || '')],
+      ['ExtractedAt', new Date(extractedAt.getTime())],
+      ['ReportName', 'GeneralLedger'],
+      ['ReportBasis', rows.length ? valueOrBlank_(rows[0][3]) : 'Cash'],
+      ['ReportStartDate', startDate],
+      ['ReportEndDate', endDate],
+      ['RowCount', rows.length]
+    ];
+    metadata.getRange(1, 1, 1, 2).setValues([QBO_GENERAL_LEDGER_SNAPSHOT_METADATA_HEADERS.slice()]).setFontWeight('bold');
+    metadata.getRange(2, 1, metadataRows.length, 2).setValues(metadataRows);
+    metadata.getRange(4, 2).setNumberFormat('yyyy-mm-dd hh:mm:ss');
+    metadata.setFrozenRows(1);
+    SpreadsheetApp.flush();
+    validateQboGeneralLedgerRunSnapshotV2_(snapshot.getId(), runId, startDate, endDate, rows.length, extractedAt);
+  } catch (error) {
+    try { file.setTrashed(true); } catch (cleanupError) {}
+    throw error;
+  }
+  safeLog_('[GL REPORT] | RUN SNAPSHOT V2 | COMPLETE | contract=' + QBO_GENERAL_LEDGER_SNAPSHOT_ARTIFACT_CONTRACT_V2 + ' | run=' + runId + ' | rows=' + rows.length + ' | file=' + fileName + ' | id=' + snapshot.getId());
+  return { fileId:snapshot.getId(), fileName:fileName, artifactContract:QBO_GENERAL_LEDGER_SNAPSHOT_ARTIFACT_CONTRACT_V2 };
 }
 
+function validateQboGeneralLedgerRunSnapshotV2_(snapshotFileId, runId, startDate, endDate, expectedRowCount, expectedExtractedAt) {
+  const ss = SpreadsheetApp.openById(String(snapshotFileId || '').trim());
+  const sheet = ss.getSheetByName(QBO_GENERAL_LEDGER_REPORT.DATA_SHEET);
+  if (!sheet) throw new Error('GL_RUN_SNAPSHOT_V2_DATA_SHEET_MISSING');
+  const lastColumn = sheet.getLastColumn();
+  if (lastColumn !== QBO_GENERAL_LEDGER_HEADERS.length) throw new Error('GL_RUN_SNAPSHOT_V2_COLUMN_COUNT_MISMATCH');
+  const headers = sheet.getRange(1, 1, 1, lastColumn).getDisplayValues()[0].map(function(v) { return String(v || '').trim(); });
+  if (!QBO_GENERAL_LEDGER_HEADERS.every(function(h, i) { return headers[i] === h; })) throw new Error('GL_RUN_SNAPSHOT_V2_HEADER_MISMATCH');
+  const actualRows = Math.max(0, sheet.getLastRow() - 1);
+  if (actualRows !== expectedRowCount) throw new Error('GL_RUN_SNAPSHOT_V2_ROW_COUNT_MISMATCH: expected=' + expectedRowCount + ' actual=' + actualRows);
+  const rows = qboGeneralLedgerSnapshotRows_(snapshotFileId, runId, startDate, endDate);
+  if (rows.length !== expectedRowCount) throw new Error('GL_RUN_SNAPSHOT_V2_IDENTITY_FILTER_MISMATCH: expected=' + expectedRowCount + ' actual=' + rows.length);
+
+  const metadata = ss.getSheetByName(QBO_GENERAL_LEDGER_SNAPSHOT_METADATA_SHEET);
+  if (expectedExtractedAt) {
+    if (!metadata) throw new Error('GL_RUN_SNAPSHOT_V2_METADATA_SHEET_MISSING');
+    const metaValues = metadata.getDataRange().getValues();
+    const meta = {};
+    for (let i = 1; i < metaValues.length; i++) meta[String(metaValues[i][0] || '').trim()] = metaValues[i][1];
+    if (String(meta.ArtifactContract || '') !== QBO_GENERAL_LEDGER_SNAPSHOT_ARTIFACT_CONTRACT_V2) throw new Error('GL_RUN_SNAPSHOT_V2_METADATA_CONTRACT_MISMATCH');
+    if (String(meta.ExtractRunId || '') !== String(runId || '')) throw new Error('GL_RUN_SNAPSHOT_V2_METADATA_RUN_ID_MISMATCH');
+    if (!qboGeneralLedgerTimestampsMatchToSecond_(meta.ExtractedAt, expectedExtractedAt)) throw new Error('GL_RUN_SNAPSHOT_V2_METADATA_EXTRACTED_AT_MISMATCH');
+    if (qboGeneralLedgerDateText_(meta.ReportStartDate) !== startDate || qboGeneralLedgerDateText_(meta.ReportEndDate) !== endDate) throw new Error('GL_RUN_SNAPSHOT_V2_METADATA_PERIOD_MISMATCH');
+    if (Number(meta.RowCount) !== Number(expectedRowCount)) throw new Error('GL_RUN_SNAPSHOT_V2_METADATA_ROW_COUNT_MISMATCH');
+  }
+  return { valid:true, rowCount:rows.length, artifactContract:QBO_GENERAL_LEDGER_SNAPSHOT_ARTIFACT_CONTRACT_V2, metadataValidated:!!expectedExtractedAt };
+}
+
+function qboGeneralLedgerArtifactContractForRun_(run) {
+  const explicit = String(run && run.SnapshotArtifactContract || '').trim();
+  return explicit || QBO_GENERAL_LEDGER_LEGACY_ARTIFACT_CONTRACT_V1;
+}
+
+function testQboGeneralLedgerRunSnapshotV1218Contract() {
+  const checks = [];
+  function check(name, passed) { checks.push({name:name, passed:!!passed}); if (!passed) throw new Error('GL_RUN_SNAPSHOT_V2_CONTRACT_FAIL: ' + name); }
+  check('V2 artifact contract is explicit', QBO_GENERAL_LEDGER_SNAPSHOT_ARTIFACT_CONTRACT_V2 === 'GL_RUN_SNAPSHOT_V2');
+  check('legacy blank discriminator remains grandfathered', qboGeneralLedgerArtifactContractForRun_({SnapshotArtifactContract:''}) === 'LEGACY_FULL_STORE_CONTAINER_V1');
+  check('run registry appends artifact discriminator', QBO_GENERAL_LEDGER_RUN_HEADERS[QBO_GENERAL_LEDGER_RUN_HEADERS.length - 1] === 'SnapshotArtifactContract');
+  check('snapshot creator accepts exact run rows', /createQboGeneralLedgerRunSnapshotV2_/.test(exportQboGeneralLedgerForPeriod.toString()));
+  check('legacy full-workbook snapshot creator is retired from export path', !/createQboGeneralLedgerSnapshot_/.test(exportQboGeneralLedgerForPeriod.toString()));
+  check('snapshot validation checks exact row count', /ROW_COUNT_MISMATCH/.test(validateQboGeneralLedgerRunSnapshotV2_.toString()));
+  check('snapshot validation checks exact header', /HEADER_MISMATCH/.test(validateQboGeneralLedgerRunSnapshotV2_.toString()));
+  check('snapshot validation checks exact identity filter', /IDENTITY_FILTER_MISMATCH/.test(validateQboGeneralLedgerRunSnapshotV2_.toString()));
+  check('comparison reader remains container compatible', /ExtractRunId/.test(qboGeneralLedgerSnapshotRows_.toString()) && /ReportStartDate/.test(qboGeneralLedgerSnapshotRows_.toString()));
+  check('registry migration is append-only', /MIGRATED_APPEND_ONLY/.test(ensureQboGeneralLedgerRunRegistrySchemaV2_.toString()));
+  check('registry timestamp comparison is normalized to whole-second precision', qboGeneralLedgerTimestampsMatchToSecond_(new Date(1760000000123), new Date(1760000000999)));
+  check('registry timestamp comparison rejects a different second', !qboGeneralLedgerTimestampsMatchToSecond_(new Date(1760000000123), new Date(1760000001123)));
+  check('failed v1.5.217 run has explicit recovery fixture', typeof recoverQboGeneralLedgerRunSnapshotV1218Failed217For2609 === 'function');
+  const result = {Version:'1.5.218', Status:'PASS', Test_Count:checks.length, Passed:checks.filter(function(c){return c.passed;}).length, Checks:checks};
+  safeLog_('[GL REPORT] | V1.5.218 CONTRACT | ' + JSON.stringify(result));
+  return result;
+}
+
+
+
+/** One-time recovery/diagnostic for the interrupted v1.5.217 September validation run. */
+function recoverQboGeneralLedgerRunSnapshotV1218Failed217For2609() {
+  const failedRunId = '8e6119f0-969c-4b03-8bde-b78a12df850d';
+  const failedSnapshotFileId = '1iaznRyRnDUfrpAL_ztpa_OgqZ5mjTfKEaIHWvLg1Ydo';
+  const startDate = '2026-09-01';
+  const endDate = '2026-09-30';
+  const expectedRowCount = 2215;
+  const ss = getQboGeneralLedgerReportSpreadsheet_();
+  const run = findQboGeneralLedgerRunById_(ss, failedRunId);
+  if (!run) throw new Error('GL_V1217_FAILED_RUN_REGISTRY_ROW_MISSING: run=' + failedRunId);
+  if (String(run.SnapshotFileId || '').trim() !== failedSnapshotFileId) throw new Error('GL_V1217_FAILED_RUN_SNAPSHOT_ID_MISMATCH');
+  if (qboGeneralLedgerArtifactContractForRun_(run) !== QBO_GENERAL_LEDGER_SNAPSHOT_ARTIFACT_CONTRACT_V2) throw new Error('GL_V1217_FAILED_RUN_ARTIFACT_CONTRACT_MISMATCH');
+  if (qboGeneralLedgerDateText_(run.ReportStartDate) !== startDate || qboGeneralLedgerDateText_(run.ReportEndDate) !== endDate) throw new Error('GL_V1217_FAILED_RUN_PERIOD_MISMATCH');
+  if (Number(run.RowCount) !== expectedRowCount) throw new Error('GL_V1217_FAILED_RUN_ROW_COUNT_MISMATCH');
+  const validation = validateQboGeneralLedgerRunSnapshotV2_(failedSnapshotFileId, failedRunId, startDate, endDate, expectedRowCount);
+  const prior = findPriorQboGeneralLedgerRunForRun_(ss, run);
+  if (!prior) throw new Error('GL_V1217_FAILED_RUN_PRIOR_RUN_MISSING');
+  const comparison = compareQboGeneralLedgerRunSnapshots_(ss, prior, run, true);
+  const out = {
+    Version:'1.5.218', Status:'RECOVERED', Period_Key:'2609', ExtractRunId:failedRunId,
+    RegistryRow:run.__RegistryRow, SnapshotFileId:failedSnapshotFileId,
+    SnapshotArtifactContract:qboGeneralLedgerArtifactContractForRun_(run),
+    RowCount:Number(run.RowCount), SnapshotValidated:validation.valid, SnapshotRowCount:validation.rowCount,
+    PriorExtractRunId:String(prior.ExtractRunId || ''),
+    PriorSnapshotArtifactContract:qboGeneralLedgerArtifactContractForRun_(prior),
+    Comparison:comparison, Writes_Performed:'COMPARISON_ONLY'
+  };
+  safeLog_('[GL REPORT] | V1.5.218 V1.5.217 FAILED-RUN RECOVERY | ' + JSON.stringify(out));
+  return out;
+}
+
+/** One-time regression fixture for Step 6B runtime validation. */
+function validateQboGeneralLedgerRunSnapshotV1218For2609() {
+  const result = exportQboGeneralLedgerForPeriod('2026-09-01', '2026-09-30');
+  const validation = validateQboGeneralLedgerRunSnapshotV2_(result.snapshotFileId, result.extractRunId, result.startDate, result.endDate, result.rowCount);
+  const ss = getQboGeneralLedgerReportSpreadsheet_();
+  const run = findLatestQboGeneralLedgerRunForPeriod_(ss, '2026-09-01', '2026-09-30');
+  const out = {
+    Version:'1.5.218', Status:'SUCCESS', Period_Key:'2609', ExtractRunId:result.extractRunId,
+    SnapshotFileId:result.snapshotFileId, SnapshotFileName:result.snapshotFileName,
+    SnapshotArtifactContract:qboGeneralLedgerArtifactContractForRun_(run), RowCount:result.rowCount,
+    SnapshotValidated:validation.valid, SnapshotRowCount:validation.rowCount,
+    PriorExtractRunId:result.priorExtractRunId, Comparison:result.comparison
+  };
+  safeLog_('[GL REPORT] | V1.5.218 RUNTIME VALIDATION | ' + JSON.stringify(out));
+  return out;
+}
+
+
+/** v1.5.220 zero-argument contract test. */
+function testQboGeneralLedgerRunSnapshotV1220Contract() {
+  const checks = [];
+  function check(name, passed) { checks.push({name:name, passed:!!passed}); }
+  const appendSrc = appendQboGeneralLedgerRun_.toString();
+  const snapshotSrc = createQboGeneralLedgerRunSnapshotV2_.toString();
+  const recoverySrc = recoverQboGeneralLedgerExtractedAtV1220Failed217For2609.toString();
+  check('V2 artifact contract remains explicit', QBO_GENERAL_LEDGER_SNAPSHOT_ARTIFACT_CONTRACT_V2 === 'GL_RUN_SNAPSHOT_V2');
+  check('registry writer isolates ExtractedAt write', /writeRow\[1\] = ''/.test(appendSrc) && /extractedAtCell\.setValue/.test(appendSrc));
+  check('registry writer formats ExtractedAt as timestamp', /yyyy-mm-dd hh:mm:ss/.test(appendSrc));
+  check('registry writer flushes before verification', /SpreadsheetApp\.flush/.test(appendSrc));
+  check('registry writer verifies semantic timestamp', /qboGeneralLedgerTimestampsMatchToSecond_/.test(appendSrc));
+  check('V2 snapshot contains metadata sheet', /QBO_GENERAL_LEDGER_SNAPSHOT_METADATA_SHEET/.test(snapshotSrc));
+  check('V2 metadata includes ExtractRunId', /ExtractRunId/.test(snapshotSrc));
+  check('V2 metadata includes ExtractedAt', /ExtractedAt/.test(snapshotSrc));
+  check('V2 metadata includes period and row count', /ReportStartDate/.test(snapshotSrc) && /ReportEndDate/.test(snapshotSrc) && /RowCount/.test(snapshotSrc));
+  check('recovery is fixed to interrupted run', /8e6119f0-969c-4b03-8bde-b78a12df850d/.test(recoverySrc));
+  check('recovery requires all run rows', /2215/.test(recoverySrc));
+  check('recovery writes only registry ExtractedAt cell', /getRange\(registryRow, 2\)/.test(recoverySrc));
+  const passed = checks.filter(function(c){return c.passed;}).length;
+  const result = {Version:'1.5.220', Status:passed===checks.length?'PASS':'FAIL', Test_Count:checks.length, Passed:passed, Checks:checks};
+  safeLog_('[GL REPORT] | V1.5.220 CONTRACT | ' + JSON.stringify(result));
+  if (passed !== checks.length) throw new Error('GL_V1_5_220_CONTRACT_FAILED');
+  return result;
+}
+
+/** Controlled recovery of the v1.5.217 interrupted registry timestamp. */
+function recoverQboGeneralLedgerExtractedAtV1220Failed217For2609() {
+  const runId = '8e6119f0-969c-4b03-8bde-b78a12df850d';
+  const expectedRows = 2215;
+  const spreadsheet = getQboGeneralLedgerReportSpreadsheet_();
+  const run = findQboGeneralLedgerRunById_(spreadsheet, runId);
+  if (!run) throw new Error('GL_V1220_RECOVERY_RUN_NOT_FOUND');
+  const registryRow = Number(run.__RegistryRow || 0);
+  if (!registryRow) throw new Error('GL_V1220_RECOVERY_REGISTRY_ROW_MISSING');
+  if (run.ExtractedAt instanceof Date && !isNaN(run.ExtractedAt.getTime())) {
+    throw new Error('GL_V1220_RECOVERY_REFUSED_ALREADY_HAS_EXTRACTED_AT');
+  }
+  if (String(run.SnapshotArtifactContract || '') !== QBO_GENERAL_LEDGER_SNAPSHOT_ARTIFACT_CONTRACT_V2) throw new Error('GL_V1220_RECOVERY_ARTIFACT_CONTRACT_MISMATCH');
+  if (qboGeneralLedgerDateText_(run.ReportStartDate) !== '2026-09-01' || qboGeneralLedgerDateText_(run.ReportEndDate) !== '2026-09-30') throw new Error('GL_V1220_RECOVERY_PERIOD_MISMATCH');
+  if (Number(run.RowCount) !== expectedRows) throw new Error('GL_V1220_RECOVERY_REGISTRY_ROW_COUNT_MISMATCH');
+
+  const data = spreadsheet.getSheetByName(QBO_GENERAL_LEDGER_REPORT.DATA_SHEET);
+  const values = data.getDataRange().getValues();
+  const matching = [];
+  for (let i = 1; i < values.length; i++) if (String(values[i][0] || '').trim() === runId) matching.push(values[i]);
+  if (matching.length !== expectedRows) throw new Error('GL_V1220_RECOVERY_DATA_ROW_COUNT_MISMATCH: expected=' + expectedRows + ' actual=' + matching.length);
+  let recoveredMs = null;
+  for (let i = 0; i < matching.length; i++) {
+    const value = matching[i][1];
+    if (!(value instanceof Date) || isNaN(value.getTime())) throw new Error('GL_V1220_RECOVERY_DATA_EXTRACTED_AT_INVALID: row=' + (i + 1));
+    if (recoveredMs === null) recoveredMs = value.getTime();
+    if (value.getTime() !== recoveredMs) throw new Error('GL_V1220_RECOVERY_MULTIPLE_EXTRACTED_AT_VALUES');
+  }
+  const recovered = new Date(recoveredMs);
+  const runSheet = spreadsheet.getSheetByName(QBO_GENERAL_LEDGER_REPORT.RUNS_SHEET);
+  const cell = runSheet.getRange(registryRow, 2);
+  cell.setNumberFormat('yyyy-mm-dd hh:mm:ss');
+  cell.setValue(recovered);
+  SpreadsheetApp.flush();
+  const stored = cell.getValue();
+  if (!qboGeneralLedgerTimestampsMatchToSecond_(stored, recovered)) throw new Error('GL_V1220_RECOVERY_WRITE_VERIFICATION_FAILED');
+  const result = {Version:'1.5.220', Status:'RECOVERED', ExtractRunId:runId, RegistryRow:registryRow, EvidenceRowCount:matching.length, UniqueExtractedAtCount:1, RecoveredExtractedAtISO:recovered.toISOString(), StoredExtractedAtISO:stored.toISOString(), Writes_Performed:1};
+  safeLog_('[GL REPORT] | V1.5.220 EXTRACTED_AT RECOVERY | ' + JSON.stringify(result));
+  return result;
+}
+
+/** One-time full-path September 2026 validation fixture for v1.5.220. */
+function validateQboGeneralLedgerRunSnapshotV1220For2609() {
+  const result = exportQboGeneralLedgerForPeriod('2026-09-01', '2026-09-30', 'Cash');
+  const spreadsheet = getQboGeneralLedgerReportSpreadsheet_();
+  const run = findQboGeneralLedgerRunById_(spreadsheet, result.extractRunId || result.ExtractRunId);
+  if (!run) throw new Error('GL_V1220_VALIDATION_RUN_NOT_REGISTERED');
+  if (!(run.ExtractedAt instanceof Date) || isNaN(run.ExtractedAt.getTime())) throw new Error('GL_V1220_VALIDATION_EXTRACTED_AT_MISSING');
+  if (String(run.SnapshotArtifactContract || '') !== QBO_GENERAL_LEDGER_SNAPSHOT_ARTIFACT_CONTRACT_V2) throw new Error('GL_V1220_VALIDATION_ARTIFACT_CONTRACT_MISMATCH');
+  validateQboGeneralLedgerRunSnapshotV2_(run.SnapshotFileId, run.ExtractRunId, '2026-09-01', '2026-09-30', Number(run.RowCount), run.ExtractedAt);
+  const prior = findPriorQboGeneralLedgerRunForRun_(spreadsheet, run);
+  const output = {Version:'1.5.220', Status:'PASS', ExtractRunId:run.ExtractRunId, ExtractedAtISO:run.ExtractedAt.toISOString(), RowCount:Number(run.RowCount), SnapshotFileId:String(run.SnapshotFileId || ''), SnapshotArtifactContract:String(run.SnapshotArtifactContract || ''), PriorExtractRunId:prior ? String(prior.ExtractRunId || '') : '', PriorSnapshotArtifactContract:prior ? qboGeneralLedgerArtifactContractForRun_(prior) : '', MetadataValidated:true};
+  safeLog_('[GL REPORT] | V1.5.220 FULL PATH 2609 | ' + JSON.stringify(output));
+  return output;
+}
+
+
+/** v1.5.221 zero-argument Step 6B call-chain contract test. */
+function testQboGeneralLedgerRunSnapshotV1221Contract() {
+  const checks = [];
+  function check(name, passed) { checks.push({name:name, passed:!!passed}); }
+  const exportSrc = exportQboGeneralLedgerForPeriod.toString();
+  const validatorSrc = validateQboGeneralLedgerRunSnapshotV2_.toString();
+  const diagnosticSrc = diagnoseQboGeneralLedgerInterruptedRunV1221For2609.toString();
+  check('production export passes extractedAt into V2 snapshot creator', /createQboGeneralLedgerRunSnapshotV2_\s*\(\s*rows\s*,\s*runId\s*,\s*startDate\s*,\s*endDate\s*,\s*extractedAt\s*\)/s.test(exportSrc));
+  check('V2 snapshot creator requires extractedAt', /GL_RUN_SNAPSHOT_V2_EXTRACTED_AT_REQUIRED/.test(createQboGeneralLedgerRunSnapshotV2_.toString()));
+  check('V2 validator reaches metadata validation before success return', validatorSrc.indexOf('QBO_GENERAL_LEDGER_SNAPSHOT_METADATA_SHEET') >= 0 && validatorSrc.indexOf('QBO_GENERAL_LEDGER_SNAPSHOT_METADATA_SHEET') < validatorSrc.lastIndexOf('return { valid:true'));
+  check('V2 validator checks metadata ExtractedAt', /METADATA_EXTRACTED_AT_MISMATCH/.test(validatorSrc));
+  check('V2 validator checks metadata period', /METADATA_PERIOD_MISMATCH/.test(validatorSrc));
+  check('V2 validator checks metadata row count', /METADATA_ROW_COUNT_MISMATCH/.test(validatorSrc));
+  check('registry writer still isolates and verifies ExtractedAt', /extractedAtCell\.setValue/.test(appendQboGeneralLedgerRun_.toString()) && /qboGeneralLedgerTimestampsMatchToSecond_/.test(appendQboGeneralLedgerRun_.toString()));
+  check('diagnostic is fixed to interrupted v1.5.220 run', /6885afa7-640e-4c2c-9751-492f2451cb22/.test(diagnosticSrc));
+  check('diagnostic does not invoke QBO export', !/exportQboGeneralLedgerForPeriod\s*\(/.test(diagnosticSrc));
+  check('diagnostic performs no production writes', !/setValue\s*\(|setValues\s*\(|appendRow\s*\(|deleteRow\s*\(|clear\s*\(/.test(diagnosticSrc));
+  const passed = checks.filter(function(c){ return c.passed; }).length;
+  const result = {Version:'1.5.221', Status:passed===checks.length?'PASS':'FAIL', Test_Count:checks.length, Passed:passed, Checks:checks};
+  safeLog_('[GL REPORT] | V1.5.221 CONTRACT | ' + JSON.stringify(result));
+  if (passed !== checks.length) throw new Error('GL_V1_5_221_CONTRACT_FAILED');
+  return result;
+}
+
+/** Read-only diagnostic for the interrupted v1.5.220 September validation run. */
+function diagnoseQboGeneralLedgerInterruptedRunV1221For2609() {
+  const runId = '6885afa7-640e-4c2c-9751-492f2451cb22';
+  const startDate = '2026-09-01';
+  const endDate = '2026-09-30';
+  const spreadsheet = getQboGeneralLedgerReportSpreadsheet_();
+  const registryRun = findQboGeneralLedgerRunById_(spreadsheet, runId);
+  const data = spreadsheet.getSheetByName(QBO_GENERAL_LEDGER_REPORT.DATA_SHEET);
+  if (!data) throw new Error('GL_V1221_DIAGNOSTIC_DATA_SHEET_MISSING');
+  const values = data.getDataRange().getValues();
+  const headers = values[0].map(function(v){ return String(v || '').trim(); });
+  const runIdx = headers.indexOf('ExtractRunId');
+  const extractedIdx = headers.indexOf('ExtractedAt');
+  const startIdx = headers.indexOf('ReportStartDate');
+  const endIdx = headers.indexOf('ReportEndDate');
+  if (runIdx < 0 || extractedIdx < 0 || startIdx < 0 || endIdx < 0) throw new Error('GL_V1221_DIAGNOSTIC_REQUIRED_COLUMNS_MISSING');
+  let runRows = 0;
+  let periodRows = 0;
+  const periodRunCounts = {};
+  const extractedMs = {};
+  for (let i = 1; i < values.length; i++) {
+    const row = values[i];
+    const rowRunId = String(row[runIdx] || '').trim();
+    const inPeriod = qboGeneralLedgerDateText_(row[startIdx]) === startDate && qboGeneralLedgerDateText_(row[endIdx]) === endDate;
+    if (inPeriod) {
+      periodRows++;
+      periodRunCounts[rowRunId || '(blank)'] = (periodRunCounts[rowRunId || '(blank)'] || 0) + 1;
+    }
+    if (rowRunId === runId) {
+      runRows++;
+      const v = row[extractedIdx];
+      const key = v instanceof Date && !isNaN(v.getTime()) ? String(v.getTime()) : 'INVALID:' + String(v || '');
+      extractedMs[key] = (extractedMs[key] || 0) + 1;
+    }
+  }
+  const uniqueKeys = Object.keys(extractedMs);
+  const uniqueExtractedAtISO = uniqueKeys.map(function(k){
+    return /^\d+$/.test(k) ? new Date(Number(k)).toISOString() : k;
+  });
+  const props = PropertiesService.getScriptProperties();
+  const folderId = String(props.getProperty(SCRIPT_PROPERTY_KEYS.SNAPSHOT_FOLDER_ID) || '').trim();
+  const shortRun = runId.replace(/[^A-Za-z0-9]/g, '').slice(0, 12);
+  let matchingSnapshotFiles = [];
+  if (folderId) {
+    const files = DriveApp.getFolderById(folderId).getFiles();
+    while (files.hasNext()) {
+      const f = files.next();
+      const name = String(f.getName() || '');
+      if (name.indexOf('QBO_GL_RUN_SNAPSHOT_V2_' + startDate + '_to_' + endDate + '_' + shortRun + '_') === 0) {
+        matchingSnapshotFiles.push({FileId:f.getId(), FileName:name});
+      }
+    }
+  }
+  const result = {
+    Version:'1.5.221', Status:'DIAGNOSTIC_COMPLETE', Writes_To_GL_Production:0,
+    ExtractRunId:runId, RegistryPresent:!!registryRun,
+    RegistryRow:registryRun ? Number(registryRun.__RegistryRow || 0) : 0,
+    MatchingDataRowCount:runRows,
+    UniqueExtractedAtCount:uniqueKeys.length,
+    UniqueExtractedAtISO:uniqueExtractedAtISO,
+    CurrentPeriodRowCount:periodRows,
+    CurrentPeriodRunCounts:periodRunCounts,
+    MatchingV2SnapshotFileCount:matchingSnapshotFiles.length,
+    MatchingV2SnapshotFiles:matchingSnapshotFiles,
+    ReplacedRowsFromFailedExecutionLog:4360,
+    ReplacedRowsHistoricalCompositionRecoverableFromCurrentStore:false
+  };
+  safeLog_('[GL REPORT] | V1.5.221 INTERRUPTED-RUN DIAGNOSTIC | ' + JSON.stringify(result));
+  return result;
+}
+
+/** v1.5.223 zero-argument read-only live-registry diagnostic contract. */
+function testQboGeneralLedgerLiveRegistryV1223Contract() {
+  const checks = [];
+  function check(name, passed) { checks.push({name:name, passed:!!passed}); }
+  const src = diagnoseQboGeneralLedgerLiveRegistryV1222ForFailedA98b.toString();
+  check('diagnostic has zero-argument operator wrapper', typeof diagnoseQboGeneralLedgerLiveRegistryV1223ForFailedA98b === 'function' && diagnoseQboGeneralLedgerLiveRegistryV1223ForFailedA98b.length === 0);
+  check('diagnostic is fixed to failed a98b run', /a98b060b-ac45-4c05-a2b0-5c8670b5fc3f/.test(src));
+  check('diagnostic inspects comparison registry rows', /1be5e167-35cc-4130-8c29-1ef8004146cc/.test(src) && /8e6119f0-969c-4b03-8bde-b78a12df850d/.test(src));
+  check('diagnostic inspects registry raw and display values', /getValues/.test(src) && /getDisplayValues/.test(src));
+  check('diagnostic inspects formats formulas notes and validation', /getNumberFormat\s*\(/.test(src) && /getFormula\s*\(/.test(src) && /getNote\s*\(/.test(src) && /getDataValidation\s*\(/.test(src));
+  check('diagnostic inspects merged ranges and protections', /getMergedRanges/.test(src) && /getProtections/.test(src));
+  check('diagnostic compares GL-row and V2-metadata ExtractedAt', /DataRowsExtractedAt/.test(src) && /SnapshotMetadataExtractedAt/.test(src));
+  check('diagnostic reports spreadsheet locale and timezone', /getSpreadsheetLocale/.test(src) && /getSpreadsheetTimeZone/.test(src));
+  check('diagnostic does not invoke GL export', !/exportQboGeneralLedgerForPeriod\s*\(/.test(src));
+  check('diagnostic does not write production registry', !/deleteRow\s*\(|appendRow\s*\(|clear\s*\(/.test(src) && !/registry[^\n]*setValue/i.test(src));
+  const passed = checks.filter(function(c){ return c.passed; }).length;
+  const result = {Version:'1.5.223', Status:passed===checks.length?'PASS':'FAIL', Test_Count:checks.length, Passed:passed, Checks:checks};
+  safeLog_('[GL REPORT] | V1.5.223 CONTRACT | ' + JSON.stringify(result));
+  if (passed !== checks.length) throw new Error('GL_V1_5_223_CONTRACT_FAILED');
+  return result;
+}
+
+/**
+ * Read-only production diagnostic for the failed a98b V2 registry timestamp write.
+ * Creates no GL acquisition and performs no writes to the production GL workbook.
+ */
+function diagnoseQboGeneralLedgerLiveRegistryV1223ForFailedA98b() {
+  return diagnoseQboGeneralLedgerLiveRegistryV1222ForFailedA98b();
+}
+
+function diagnoseQboGeneralLedgerLiveRegistryV1222ForFailedA98b() {
+  const failedRunId = 'a98b060b-ac45-4c05-a2b0-5c8670b5fc3f';
+  const preFilingRunId = '1be5e167-35cc-4130-8c29-1ef8004146cc';
+  const recoveredV2RunId = '8e6119f0-969c-4b03-8bde-b78a12df850d';
+  const expectedSnapshotId = '1WZlwdTGfKkGTVDavikRyaCkkgeEm4kPjyaXLLkDUP_4';
+  const spreadsheet = getQboGeneralLedgerReportSpreadsheet_();
+  const registry = spreadsheet.getSheetByName(QBO_GENERAL_LEDGER_REPORT.RUNS_SHEET);
+  const data = spreadsheet.getSheetByName(QBO_GENERAL_LEDGER_REPORT.DATA_SHEET);
+  if (!registry || !data) throw new Error('GL_V1222_REQUIRED_SHEET_MISSING');
+
+  const registryValues = registry.getDataRange().getValues();
+  const registryDisplay = registry.getDataRange().getDisplayValues();
+  const headers = registryDisplay[0].map(function(v){ return String(v || '').trim(); });
+  const runIdx = headers.indexOf('ExtractRunId');
+  const extractedIdx = headers.indexOf('ExtractedAt');
+  if (runIdx < 0 || extractedIdx < 0) throw new Error('GL_V1222_REGISTRY_COLUMNS_MISSING');
+
+  function registryCellDiagnostic_(runId) {
+    let rowNumber = 0;
+    for (let i = 1; i < registryValues.length; i++) {
+      if (String(registryValues[i][runIdx] || '').trim() === runId) { rowNumber = i + 1; break; }
+    }
+    if (!rowNumber) return {ExtractRunId:runId, Present:false};
+    const cell = registry.getRange(rowNumber, extractedIdx + 1);
+    const raw = cell.getValue();
+    const validation = cell.getDataValidation();
+    const merged = cell.getMergedRanges();
+    return {
+      ExtractRunId:runId, Present:true, RegistryRow:rowNumber,
+      RawType:Object.prototype.toString.call(raw), IsDate:raw instanceof Date && !isNaN(raw.getTime()),
+      ISO:raw instanceof Date && !isNaN(raw.getTime()) ? raw.toISOString() : '',
+      Display:cell.getDisplayValue(), Formula:cell.getFormula(), NumberFormat:cell.getNumberFormat(),
+      Note:cell.getNote(), HasDataValidation:!!validation, MergedRangeCount:merged.length,
+      MergedRanges:merged.map(function(r){ return r.getA1Notation(); })
+    };
+  }
+
+  const comparedRegistryCells = [
+    registryCellDiagnostic_(preFilingRunId),
+    registryCellDiagnostic_(recoveredV2RunId),
+    registryCellDiagnostic_(failedRunId)
+  ];
+
+  const dataValues = data.getDataRange().getValues();
+  const dataHeaders = dataValues[0].map(function(v){ return String(v || '').trim(); });
+  const dRunIdx = dataHeaders.indexOf('ExtractRunId');
+  const dExtractedIdx = dataHeaders.indexOf('ExtractedAt');
+  if (dRunIdx < 0 || dExtractedIdx < 0) throw new Error('GL_V1222_DATA_COLUMNS_MISSING');
+  let matchingRows = 0;
+  const dataExtracted = {};
+  for (let i = 1; i < dataValues.length; i++) {
+    if (String(dataValues[i][dRunIdx] || '').trim() !== failedRunId) continue;
+    matchingRows++;
+    const v = dataValues[i][dExtractedIdx];
+    const key = v instanceof Date && !isNaN(v.getTime()) ? String(v.getTime()) : 'INVALID:' + String(v || '');
+    dataExtracted[key] = (dataExtracted[key] || 0) + 1;
+  }
+  const dataKeys = Object.keys(dataExtracted);
+  const dataISO = dataKeys.map(function(k){ return /^\d+$/.test(k) ? new Date(Number(k)).toISOString() : k; });
+
+  let snapshotMeta = {SnapshotFileId:expectedSnapshotId, Opened:false};
+  try {
+    const snapshot = SpreadsheetApp.openById(expectedSnapshotId);
+    const metaSheet = snapshot.getSheetByName(QBO_GENERAL_LEDGER_SNAPSHOT_METADATA_SHEET);
+    if (!metaSheet) throw new Error('METADATA_SHEET_MISSING');
+    const mv = metaSheet.getDataRange().getValues();
+    const meta = {};
+    for (let i = 1; i < mv.length; i++) meta[String(mv[i][0] || '').trim()] = mv[i][1];
+    const metaAt = meta.ExtractedAt;
+    snapshotMeta = {
+      SnapshotFileId:expectedSnapshotId, Opened:true,
+      ArtifactContract:String(meta.ArtifactContract || ''), ExtractRunId:String(meta.ExtractRunId || ''),
+      SnapshotMetadataExtractedAtType:Object.prototype.toString.call(metaAt),
+      SnapshotMetadataExtractedAtISO:metaAt instanceof Date && !isNaN(metaAt.getTime()) ? metaAt.toISOString() : '',
+      ReportStartDate:qboGeneralLedgerDateText_(meta.ReportStartDate), ReportEndDate:qboGeneralLedgerDateText_(meta.ReportEndDate),
+      RowCount:Number(meta.RowCount || 0)
+    };
+  } catch (e) {
+    snapshotMeta = {SnapshotFileId:expectedSnapshotId, Opened:false, Error:String(e && e.message || e)};
+  }
+
+  const protections = registry.getProtections(SpreadsheetApp.ProtectionType.RANGE).map(function(p){
+    const r = p.getRange();
+    return {A1:r.getA1Notation(), Description:String(p.getDescription() || ''), WarningOnly:p.isWarningOnly()};
+  });
+  const sheetProtections = registry.getProtections(SpreadsheetApp.ProtectionType.SHEET).map(function(p){
+    return {Description:String(p.getDescription() || ''), WarningOnly:p.isWarningOnly()};
+  });
+
+  const failed = comparedRegistryCells[2];
+  const evidenceISO = dataISO.length === 1 && !/^INVALID:/.test(dataISO[0]) ? dataISO[0] : '';
+  const metadataISO = snapshotMeta.Opened ? snapshotMeta.SnapshotMetadataExtractedAtISO : '';
+  const result = {
+    Version:'1.5.222', Status:'DIAGNOSTIC_COMPLETE', Writes_To_GL_Production:0,
+    SpreadsheetId:spreadsheet.getId(), SpreadsheetName:spreadsheet.getName(),
+    SpreadsheetLocale:spreadsheet.getSpreadsheetLocale(), SpreadsheetTimeZone:spreadsheet.getSpreadsheetTimeZone(),
+    RegistrySheet:registry.getName(), RegistryLastRow:registry.getLastRow(), RegistryLastColumn:registry.getLastColumn(),
+    ComparedRegistryExtractedAtCells:comparedRegistryCells,
+    RangeProtections:protections, SheetProtections:sheetProtections,
+    FailedRunId:failedRunId, DataRowsMatching:matchingRows,
+    DataRowsExtractedAtUniqueCount:dataKeys.length, DataRowsExtractedAtISO:dataISO,
+    SnapshotMetadata:snapshotMeta,
+    SnapshotMetadataExtractedAt:metadataISO,
+    DataRowsAndSnapshotMetadataAgree:!!evidenceISO && !!metadataISO && evidenceISO === metadataISO,
+    FailedRegistryExtractedAtBlank:!!failed && failed.Present && failed.Display === ''
+  };
+  safeLog_('[GL REPORT] | V1.5.222 LIVE REGISTRY DIAGNOSTIC | ' + JSON.stringify(result));
+  return result;
+}
+
+/**
+ * v1.5.225 compact read-only diagnostic for the failed a98b registry timestamp.
+ * Emits decisive fields in separate log records to avoid Apps Script log truncation.
+ */
+function testQboGeneralLedgerLiveRegistryV1225Contract() {
+  const checks = [];
+  function check(name, passed) { checks.push({name:name, passed:!!passed}); }
+  const src = diagnoseQboGeneralLedgerLiveRegistryV1225ForFailedA98b.toString();
+  check('diagnostic has zero-argument operator wrapper', typeof diagnoseQboGeneralLedgerLiveRegistryV1225ForFailedA98b === 'function' && diagnoseQboGeneralLedgerLiveRegistryV1225ForFailedA98b.length === 0);
+  check('diagnostic is fixed to failed a98b run', src.indexOf('a98b060b-ac45-4c05-a2b0-5c8670b5fc3f') >= 0);
+  check('diagnostic compares three registry runs', src.indexOf('1be5e167-35cc-4130-8c29-1ef8004146cc') >= 0 && src.indexOf('8e6119f0-969c-4b03-8bde-b78a12df850d') >= 0);
+  check('diagnostic reads failed run data rows', src.indexOf('DataRowsExtractedAt') >= 0);
+  check('diagnostic reads V2 metadata', src.indexOf('SpreadsheetApp.openById(expectedSnapshotId)') >= 0 && src.indexOf('QBO_GENERAL_LEDGER_SNAPSHOT_METADATA_SHEET') >= 0 && src.indexOf('ExtractedAt') >= 0);
+  check('diagnostic reports evidence agreement', src.indexOf('DataRowsAndSnapshotMetadataAgree') >= 0);
+  check('diagnostic reports protections', src.indexOf('RangeProtections') >= 0 && src.indexOf('SheetProtections') >= 0);
+  check('diagnostic does not invoke GL export', src.indexOf('exportQboGeneralLedgerForPeriod') < 0);
+  check('diagnostic contains no production setValue', src.indexOf('.setValue(') < 0 && src.indexOf('.setValues(') < 0);
+  check('diagnostic emits compact separate logs', src.indexOf('V1.5.225 FAILED CELL') >= 0 && src.indexOf('V1.5.225 EVIDENCE') >= 0);
+  const passed = checks.filter(function(c){return c.passed;}).length;
+  const result = {Version:'1.5.225', Status:passed===checks.length?'PASS':'FAIL', Test_Count:checks.length, Passed:passed, Checks:checks};
+  safeLog_('[GL REPORT] | V1.5.225 CONTRACT | ' + JSON.stringify(result));
+  if (passed !== checks.length) throw new Error('GL_V1_5_225_CONTRACT_FAILED');
+  return result;
+}
+
+function diagnoseQboGeneralLedgerLiveRegistryV1225ForFailedA98b() {
+  const failedRunId = 'a98b060b-ac45-4c05-a2b0-5c8670b5fc3f';
+  const preFilingRunId = '1be5e167-35cc-4130-8c29-1ef8004146cc';
+  const recoveredV2RunId = '8e6119f0-969c-4b03-8bde-b78a12df850d';
+  const expectedSnapshotId = '1WZlwdTGfKkGTVDavikRyaCkkgeEm4kPjyaXLLkDUP_4';
+  const spreadsheet = getQboGeneralLedgerReportSpreadsheet_();
+  const registry = spreadsheet.getSheetByName(QBO_GENERAL_LEDGER_REPORT.RUNS_SHEET);
+  const data = spreadsheet.getSheetByName(QBO_GENERAL_LEDGER_REPORT.DATA_SHEET);
+  if (!registry || !data) throw new Error('GL_V1225_REQUIRED_SHEET_MISSING');
+
+  const registryValues = registry.getDataRange().getValues();
+  const registryDisplay = registry.getDataRange().getDisplayValues();
+  const headers = registryDisplay[0].map(function(v){ return String(v || '').trim(); });
+  const runIdx = headers.indexOf('ExtractRunId');
+  const extractedIdx = headers.indexOf('ExtractedAt');
+  if (runIdx < 0 || extractedIdx < 0) throw new Error('GL_V1225_REGISTRY_COLUMNS_MISSING');
+
+  function cellDiag(runId) {
+    let rowNumber = 0;
+    for (let i=1;i<registryValues.length;i++) if (String(registryValues[i][runIdx]||'').trim()===runId) { rowNumber=i+1; break; }
+    if (!rowNumber) return {ExtractRunId:runId,Present:false};
+    const cell=registry.getRange(rowNumber,extractedIdx+1), raw=cell.getValue();
+    return {ExtractRunId:runId,Present:true,RegistryRow:rowNumber,RawType:Object.prototype.toString.call(raw),IsDate:raw instanceof Date&&!isNaN(raw.getTime()),ISO:raw instanceof Date&&!isNaN(raw.getTime())?raw.toISOString():'',Display:cell.getDisplayValue(),NumberFormat:cell.getNumberFormat(),Formula:cell.getFormula(),Note:cell.getNote(),HasDataValidation:!!cell.getDataValidation(),MergedRangeCount:cell.getMergedRanges().length};
+  }
+
+  const legacy=cellDiag(preFilingRunId), recovered=cellDiag(recoveredV2RunId), failed=cellDiag(failedRunId);
+  const dataValues=data.getDataRange().getValues();
+  const dh=dataValues[0].map(function(v){return String(v||'').trim();});
+  const dr=dh.indexOf('ExtractRunId'), de=dh.indexOf('ExtractedAt');
+  if (dr<0||de<0) throw new Error('GL_V1225_DATA_COLUMNS_MISSING');
+  let count=0; const unique={};
+  for (let i=1;i<dataValues.length;i++) {
+    if (String(dataValues[i][dr]||'').trim()!==failedRunId) continue;
+    count++; const v=dataValues[i][de]; const k=v instanceof Date&&!isNaN(v.getTime())?String(v.getTime()):'INVALID:'+String(v||''); unique[k]=(unique[k]||0)+1;
+  }
+  const keys=Object.keys(unique);
+  const dataISO=keys.map(function(k){return /^\d+$/.test(k)?new Date(Number(k)).toISOString():k;});
+
+  let metaISO='', meta={Opened:false,SnapshotFileId:expectedSnapshotId};
+  try {
+    const ss=SpreadsheetApp.openById(expectedSnapshotId), ms=ss.getSheetByName(QBO_GENERAL_LEDGER_SNAPSHOT_METADATA_SHEET);
+    if (!ms) throw new Error('METADATA_SHEET_MISSING');
+    const mv=ms.getDataRange().getValues(), m={}; for (let i=1;i<mv.length;i++) m[String(mv[i][0]||'').trim()]=mv[i][1];
+    const at=m.ExtractedAt; metaISO=at instanceof Date&&!isNaN(at.getTime())?at.toISOString():'';
+    meta={Opened:true,SnapshotFileId:expectedSnapshotId,ArtifactContract:String(m.ArtifactContract||''),ExtractRunId:String(m.ExtractRunId||''),ExtractedAtISO:metaISO,RowCount:Number(m.RowCount||0),ReportStartDate:qboGeneralLedgerDateText_(m.ReportStartDate),ReportEndDate:qboGeneralLedgerDateText_(m.ReportEndDate)};
+  } catch(e) { meta={Opened:false,SnapshotFileId:expectedSnapshotId,Error:String(e&&e.message||e)}; }
+
+  const rangeProtections=registry.getProtections(SpreadsheetApp.ProtectionType.RANGE).map(function(p){return {A1:p.getRange().getA1Notation(),Description:String(p.getDescription()||''),WarningOnly:p.isWarningOnly()};});
+  const sheetProtections=registry.getProtections(SpreadsheetApp.ProtectionType.SHEET).map(function(p){return {Description:String(p.getDescription()||''),WarningOnly:p.isWarningOnly()};});
+  const evidenceISO=dataISO.length===1&&!/^INVALID:/.test(dataISO[0])?dataISO[0]:'';
+  const agree=!!evidenceISO&&!!metaISO&&evidenceISO===metaISO;
+
+  safeLog_('[GL REPORT] | V1.5.225 REGISTRY CONTEXT | '+JSON.stringify({SpreadsheetId:spreadsheet.getId(),SpreadsheetName:spreadsheet.getName(),Locale:spreadsheet.getSpreadsheetLocale(),TimeZone:spreadsheet.getSpreadsheetTimeZone(),RegistryLastRow:registry.getLastRow(),RegistryLastColumn:registry.getLastColumn()}));
+  safeLog_('[GL REPORT] | V1.5.225 LEGACY CELL | '+JSON.stringify(legacy));
+  safeLog_('[GL REPORT] | V1.5.225 RECOVERED CELL | '+JSON.stringify(recovered));
+  safeLog_('[GL REPORT] | V1.5.225 FAILED CELL | '+JSON.stringify(failed));
+  safeLog_('[GL REPORT] | V1.5.225 EVIDENCE | '+JSON.stringify({FailedRunId:failedRunId,DataRowsMatching:count,DataRowsExtractedAtUniqueCount:keys.length,DataRowsExtractedAtISO:dataISO,SnapshotMetadata:meta,DataRowsAndSnapshotMetadataAgree:agree}));
+  safeLog_('[GL REPORT] | V1.5.225 PROTECTIONS | '+JSON.stringify({RangeProtections:rangeProtections,SheetProtections:sheetProtections}));
+  const result={Version:'1.5.225',Status:'DIAGNOSTIC_COMPLETE',Writes_To_GL_Production:0,FailedRegistryExtractedAtBlank:failed.Present&&failed.Display==='',DataRowsAndSnapshotMetadataAgree:agree};
+  safeLog_('[GL REPORT] | V1.5.225 RESULT | '+JSON.stringify(result));
+  return result;
+}
+
+
+/**
+ * v1.5.226 contract for the atomic GL registry writer and controlled a98b recovery.
+ * This test is read-only and does not invoke a GL acquisition.
+ */
+function testQboGeneralLedgerRegistryAtomicWriteV1226Contract() {
+  const checks = [];
+  function check(name, passed) { checks.push({name:name, passed:!!passed}); }
+  const appendSrc = appendQboGeneralLedgerRun_.toString();
+  const recoverySrc = recoverQboGeneralLedgerRegistryExtractedAtV1226ForFailedA98b.toString();
+  check('registry writer writes ExtractedAt in initial row setValues', /writeRow\[1\]\s*=\s*extractedAt/.test(appendSrc) && /setValues\(\[writeRow\]\)/.test(appendSrc));
+  check('registry writer no longer performs second-stage ExtractedAt setValue', appendSrc.indexOf('extractedAtCell.setValue') < 0);
+  check('registry writer formats timestamp after atomic persistence', /setNumberFormat\('yyyy-mm-dd hh:mm:ss'\)/.test(appendSrc));
+  check('registry writer flushes and verifies persisted timestamp', /SpreadsheetApp\.flush\(\)/.test(appendSrc) && /GL_RUN_REGISTRY_EXTRACTED_AT_WRITE_MISMATCH/.test(appendSrc));
+  check('recovery has zero-argument operator wrapper', recoverQboGeneralLedgerRegistryExtractedAtV1226ForFailedA98b.length === 0);
+  check('recovery is fixed to exact failed run and V2 snapshot', recoverySrc.indexOf('a98b060b-ac45-4c05-a2b0-5c8670b5fc3f') >= 0 && recoverySrc.indexOf('1WZlwdTGfKkGTVDavikRyaCkkgeEm4kPjyaXLLkDUP_4') >= 0);
+  check('recovery requires exact live workbook identity', recoverySrc.indexOf('1FrWoVQtVS_nPAncFxPeCOs1wmre-Scf_8zvjBw4zf_k') >= 0);
+  check('recovery proves GL rows and V2 metadata before write', recoverySrc.indexOf('GL_V1226_EVIDENCE_TIMESTAMP_MISMATCH') >= 0 && recoverySrc.indexOf('validateQboGeneralLedgerRunSnapshotV2_') >= 0);
+  check('recovery writes only registry ExtractedAt cell', /getRange\(registryRow, 2\)/.test(recoverySrc) && /extractedAtCell\.setValue\(recoveredAt\)/.test(recoverySrc));
+  check('recovery verifies exact stored timestamp after write', recoverySrc.indexOf('GL_V1226_RECOVERY_WRITE_VERIFY_FAILED') >= 0);
+  check('recovery refuses nonblank registry timestamp', recoverySrc.indexOf('GL_V1226_REGISTRY_EXTRACTED_AT_NOT_BLANK') >= 0);
+  check('recovery does not invoke GL export', recoverySrc.indexOf('exportQboGeneralLedgerReport') < 0 && recoverySrc.indexOf('runQboGeneralLedger') < 0);
+  const passed = checks.filter(function(c){return c.passed;}).length;
+  const result = {Version:'1.5.226',Status:passed===checks.length?'PASS':'FAIL',Test_Count:checks.length,Passed:passed,Checks:checks};
+  safeLog_('[GL REPORT] | V1.5.226 CONTRACT | ' + JSON.stringify(result));
+  if (passed !== checks.length) throw new Error('GL_V1_5_226_CONTRACT_FAILED');
+  return result;
+}
+
+/**
+ * Controlled one-cell recovery for the a98b V2 run.
+ * Preconditions prove the timestamp independently from the persisted GL rows and
+ * immutable V2 metadata. The only production write is registry column B for the
+ * exact existing run row. This does not create a snapshot or a registry run.
+ */
+function recoverQboGeneralLedgerRegistryExtractedAtV1226ForFailedA98b() {
+  const expectedWorkbookId = '1FrWoVQtVS_nPAncFxPeCOs1wmre-Scf_8zvjBw4zf_k';
+  const runId = 'a98b060b-ac45-4c05-a2b0-5c8670b5fc3f';
+  const snapshotId = '1WZlwdTGfKkGTVDavikRyaCkkgeEm4kPjyaXLLkDUP_4';
+  const expectedStart = '2026-09-01';
+  const expectedEnd = '2026-09-30';
+  const expectedRowCount = 2215;
+  const expectedISO = '2026-10-04T06:17:00.941Z';
+
+  const spreadsheet = getQboGeneralLedgerReportSpreadsheet_();
+  if (spreadsheet.getId() !== expectedWorkbookId) throw new Error('GL_V1226_LIVE_WORKBOOK_ID_MISMATCH');
+  const registry = spreadsheet.getSheetByName(QBO_GENERAL_LEDGER_REPORT.RUNS_SHEET);
+  const data = spreadsheet.getSheetByName(QBO_GENERAL_LEDGER_REPORT.DATA_SHEET);
+  if (!registry || !data) throw new Error('GL_V1226_REQUIRED_SHEET_MISSING');
+
+  const registryValues = registry.getDataRange().getValues();
+  const registryHeaders = registryValues[0].map(function(v){ return String(v || '').trim(); });
+  const runIdx = registryHeaders.indexOf('ExtractRunId');
+  const snapshotIdx = registryHeaders.indexOf('SnapshotFileId');
+  const contractIdx = registryHeaders.indexOf('SnapshotArtifactContract');
+  const startIdx = registryHeaders.indexOf('ReportStartDate');
+  const endIdx = registryHeaders.indexOf('ReportEndDate');
+  const rowCountIdx = registryHeaders.indexOf('RowCount');
+  if ([runIdx,snapshotIdx,contractIdx,startIdx,endIdx,rowCountIdx].some(function(i){return i<0;})) throw new Error('GL_V1226_REGISTRY_COLUMNS_MISSING');
+
+  const matches = [];
+  for (let i=1;i<registryValues.length;i++) if (String(registryValues[i][runIdx] || '').trim() === runId) matches.push(i+1);
+  if (matches.length !== 1) throw new Error('GL_V1226_REGISTRY_RUN_CARDINALITY_INVALID: count=' + matches.length);
+  const registryRow = matches[0];
+  const registryRecord = registryValues[registryRow-1];
+  if (String(registryRecord[snapshotIdx] || '').trim() !== snapshotId) throw new Error('GL_V1226_REGISTRY_SNAPSHOT_ID_MISMATCH');
+  if (String(registryRecord[contractIdx] || '').trim() !== QBO_GENERAL_LEDGER_SNAPSHOT_ARTIFACT_CONTRACT_V2) throw new Error('GL_V1226_REGISTRY_ARTIFACT_CONTRACT_MISMATCH');
+  if (qboGeneralLedgerDateText_(registryRecord[startIdx]) !== expectedStart || qboGeneralLedgerDateText_(registryRecord[endIdx]) !== expectedEnd) throw new Error('GL_V1226_REGISTRY_PERIOD_MISMATCH');
+  if (Number(registryRecord[rowCountIdx]) !== expectedRowCount) throw new Error('GL_V1226_REGISTRY_ROW_COUNT_MISMATCH');
+
+  const extractedAtCell = registry.getRange(registryRow, 2);
+  const prior = extractedAtCell.getValue();
+  if ((prior instanceof Date && !isNaN(prior.getTime())) || String(extractedAtCell.getDisplayValue() || '').trim() !== '') throw new Error('GL_V1226_REGISTRY_EXTRACTED_AT_NOT_BLANK');
+
+  const dataValues = data.getDataRange().getValues();
+  const dataHeaders = dataValues[0].map(function(v){return String(v || '').trim();});
+  const dataRunIdx = dataHeaders.indexOf('ExtractRunId');
+  const dataAtIdx = dataHeaders.indexOf('ExtractedAt');
+  if (dataRunIdx < 0 || dataAtIdx < 0) throw new Error('GL_V1226_DATA_COLUMNS_MISSING');
+  const times = {};
+  let dataRowCount = 0;
+  for (let i=1;i<dataValues.length;i++) {
+    if (String(dataValues[i][dataRunIdx] || '').trim() !== runId) continue;
+    dataRowCount++;
+    const at = dataValues[i][dataAtIdx];
+    if (!(at instanceof Date) || isNaN(at.getTime())) throw new Error('GL_V1226_DATA_EXTRACTED_AT_INVALID');
+    times[String(at.getTime())] = true;
+  }
+  const timeKeys = Object.keys(times);
+  if (dataRowCount !== expectedRowCount || timeKeys.length !== 1) throw new Error('GL_V1226_DATA_EVIDENCE_CARDINALITY_INVALID');
+  const recoveredAt = new Date(Number(timeKeys[0]));
+  if (recoveredAt.toISOString() !== expectedISO) throw new Error('GL_V1226_DATA_EXTRACTED_AT_UNEXPECTED');
+
+  const snapshot = SpreadsheetApp.openById(snapshotId);
+  const metadataSheet = snapshot.getSheetByName(QBO_GENERAL_LEDGER_SNAPSHOT_METADATA_SHEET);
+  if (!metadataSheet) throw new Error('GL_V1226_METADATA_SHEET_MISSING');
+  const metadataValues = metadataSheet.getDataRange().getValues();
+  const meta = {};
+  for (let i=1;i<metadataValues.length;i++) meta[String(metadataValues[i][0] || '').trim()] = metadataValues[i][1];
+  const metaAt = meta.ExtractedAt;
+  if (String(meta.ArtifactContract || '') !== QBO_GENERAL_LEDGER_SNAPSHOT_ARTIFACT_CONTRACT_V2 || String(meta.ExtractRunId || '') !== runId) throw new Error('GL_V1226_METADATA_IDENTITY_MISMATCH');
+  if (qboGeneralLedgerDateText_(meta.ReportStartDate) !== expectedStart || qboGeneralLedgerDateText_(meta.ReportEndDate) !== expectedEnd || Number(meta.RowCount) !== expectedRowCount) throw new Error('GL_V1226_METADATA_SCOPE_MISMATCH');
+  if (!(metaAt instanceof Date) || isNaN(metaAt.getTime()) || metaAt.toISOString() !== expectedISO || metaAt.getTime() !== recoveredAt.getTime()) throw new Error('GL_V1226_EVIDENCE_TIMESTAMP_MISMATCH');
+  validateQboGeneralLedgerRunSnapshotV2_(snapshotId, runId, expectedStart, expectedEnd, expectedRowCount, recoveredAt);
+
+  extractedAtCell.setValue(recoveredAt);
+  extractedAtCell.setNumberFormat('yyyy-mm-dd hh:mm:ss');
+  SpreadsheetApp.flush();
+  const stored = extractedAtCell.getValue();
+  if (!(stored instanceof Date) || isNaN(stored.getTime()) || stored.getTime() !== recoveredAt.getTime()) throw new Error('GL_V1226_RECOVERY_WRITE_VERIFY_FAILED');
+
+  const result = {Version:'1.5.226',Status:'RECOVERED',ExtractRunId:runId,RegistryRow:registryRow,SnapshotFileId:snapshotId,EvidenceRowCount:dataRowCount,RecoveredExtractedAtISO:recoveredAt.toISOString(),StoredExtractedAtISO:stored.toISOString(),Writes_Performed:1};
+  safeLog_('[GL REPORT] | V1.5.226 A98B RECOVERY | ' + JSON.stringify(result));
+  return result;
+}
