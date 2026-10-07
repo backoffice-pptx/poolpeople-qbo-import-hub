@@ -1575,11 +1575,8 @@ function ensureQboGeneralLedgerRunRegistrySchemaV2_(spreadsheet) {
 }
 
 function createQboGeneralLedgerRunSnapshotV2_(rows, runId, startDate, endDate, extractedAt) {
-  const props = PropertiesService.getScriptProperties();
-  const folderId = String(props.getProperty(SCRIPT_PROPERTY_KEYS.SNAPSHOT_FOLDER_ID) || '').trim();
-  if (!folderId) {
-    throw new Error('Missing ' + SCRIPT_PROPERTY_KEYS.SNAPSHOT_FOLDER_ID + '. General Ledger exports require the existing QBO snapshot folder.');
-  }
+  // GL run artifacts have a separate route from full-master backups.
+  const folderId = qboGlRunSnapshotFoldersV05136_().runFolder.getId();
   if (!Array.isArray(rows)) throw new Error('GL_RUN_SNAPSHOT_V2_ROWS_REQUIRED');
   if (!(extractedAt instanceof Date) || isNaN(extractedAt.getTime())) throw new Error('GL_RUN_SNAPSHOT_V2_EXTRACTED_AT_REQUIRED');
   rows.forEach(function(row, i) {
