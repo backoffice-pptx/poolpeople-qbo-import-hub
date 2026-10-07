@@ -1,15 +1,11 @@
-# App 50 v1.5.226 — GL registry atomic timestamp repair + controlled a98b recovery
+# v1.5.226 — Read-only Phase G checkpoint inspector
 
-Scope: Step 6B only.
+Changed-files-only package. Adds a standalone inspector; does not replace module 4100.
 
-Changes:
-- Repairs `appendQboGeneralLedgerRun_()` so `ExtractedAt` is persisted atomically in the initial registry row `setValues()` call. Timestamp formatting occurs after persistence; the existing flush/readback semantic verification remains.
-- Adds zero-argument read-only contract test `testQboGeneralLedgerRegistryAtomicWriteV1226Contract()`.
-- Adds zero-argument controlled recovery `recoverQboGeneralLedgerRegistryExtractedAtV1226ForFailedA98b()` for the already-created V2 run `a98b060b-ac45-4c05-a2b0-5c8670b5fc3f`.
-- Recovery writes only the existing run registry's `ExtractedAt` cell after exact workbook/run/snapshot/period/row-count checks and independent agreement between 2,215 persisted GL rows and immutable V2 metadata at `2026-10-04T06:17:00.941Z`.
-- Does not create a GL snapshot, registry run, or QBO acquisition during contract/recovery.
+Run `inspectQboPhaseGGlobalEqualTimeCheckpointV1226()` once and provide its execution log.
 
-Operator order:
-1. Run `testQboGeneralLedgerRegistryAtomicWriteV1226Contract()`.
-2. Only if PASS, run `recoverQboGeneralLedgerRegistryExtractedAtV1226ForFailedA98b()`.
-3. Do not run a fresh GL acquisition until the recovery result has been reviewed.
+Reads only the exact Phase G Script Property and current user's project trigger inventory. Logs checkpoint fields and whether an iterator token exists, but never logs its value. No property writes, trigger creation/deletion, workbook access, worker invocation, or recovery occurs. Missing/invalid state is reported explicitly.
+
+V1221 recovery is restricted to the historical FAILED cursor 1117 checkpoint and must not be reused for the Oct. 6 hard engine termination. That recovery function deletes continuation triggers before validating its checkpoint. Current persisted state must be inspected before preparing a new governed recovery.
+
+Local validation: syntax check and mocked cases for existing, missing, malformed, and invalid-object state; token exclusion and unrelated-trigger exclusion; mutation APIs unavailable in mocks.

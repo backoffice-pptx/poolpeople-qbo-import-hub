@@ -1,7 +1,24 @@
-# App 50 v1.5.218 — GL Run Snapshot V2 Step 6B runtime repair
+# v1.5.218 — Phase G Replay Authority Drive Recovery
 
-- Repairs the v1.5.217 General Ledger run-registry post-write timestamp assertion by comparing at whole-second precision rather than exact milliseconds after the Google Sheets round trip.
-- Adds a zero-argument contract test with timestamp normalization checks.
-- Adds a zero-argument recovery fixture for interrupted September run `8e6119f0-969c-4b03-8bde-b78a12df850d`; it requires the already-created V2 snapshot, validates the committed registry row and snapshot, identifies the prior September run, and persists only the missing run comparison.
-- Keeps GL_RUN_SNAPSHOT_V2 prospective evidence semantics and all historical GL identities unchanged.
-- Retains a fresh zero-argument September runtime fixture for use only after recovery succeeds.
+Repairs the v1.5.217 read-only replay-authority diagnostic after the transient Drive service failure at durable manifest cursor 2141.
+
+## Recovery
+Run:
+
+`recoverQboStateApplicationV2PhaseGReplayAuthorityDiagnosticV1218`
+
+The recovery is intentionally bound to the existing run `PHASE_G_REPLAY_AUTH_V1217|1a90b039-5363-483f-a145-435aeb56cfcd` and exact durable checkpoint: cursor 2141, 497187 observations, 497131 admitted, 36 evidence exceptions, 20 blocked.
+
+The v1.5.217 worker persisted state after every successfully processed manifest, including the refreshed Drive iterator continuation token. Therefore cursor 2141 is retained; the scan is not restarted.
+
+## Transient Drive behavior
+Recognized transient Drive service failures no longer terminally poison the diagnostic. The last per-manifest checkpoint is retained and continuation is rescheduled. If trigger creation itself fails, state becomes `CONTINUATION_REQUIRED` rather than losing the checkpoint.
+
+## Equal-time limitation discovered
+The existing v1.5.217 equal-ObservedAt analysis groups records within a shard only. It cannot prove absence of equal-time groups that cross shard boundaries. The terminal diagnostic now explicitly reports:
+
+- `equalObservedAtAnalysisScope: WITHIN_SHARD_ONLY`
+- `globalEqualObservedAtCertification: false`
+- next action `RUN_GLOBAL_EQUAL_TIME_ORDER_DIAGNOSTIC`
+
+No replay authorization or State Application writes are enabled by this increment.
