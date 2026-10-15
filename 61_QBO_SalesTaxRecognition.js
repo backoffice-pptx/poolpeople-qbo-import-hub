@@ -295,7 +295,10 @@ function exportQboSalesTaxRecognitionForPeriod(startDate, endDate, expectedGlExt
         return copy;
       });
 
-      qboStrReplaceCurrent_(outputSs, periodKey, currentRows);
+      // 01_Current is a projection of the latest frozen snapshot. Keep the
+      // exact sequence and run identity on current rows; blanking them here
+      // caused the persistent lineage defect repaired in v1.5.360.
+      qboStrReplaceCurrent_(outputSs, periodKey, snapshotRows);
       qboStrAppend_(
         outputSs.getSheetByName(QBO_SALES_TAX_RECOGNITION.SNAPSHOT_SHEET),
         QBO_STR_HEADERS,
@@ -735,9 +738,26 @@ function qboStrHeader_(sheet, headers) {
 function qboStrAppend_(sheet, headers, rows) {
   qboStrHeader_(sheet, headers);
   if (!rows.length) return;
-  sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, headers.length).setValues(rows);
-  sheet.getRange(sheet.getLastRow() - rows.length + 1, 1, rows.length, headers.length)
-    .setWrapStrategy(SpreadsheetApp.WrapStrategy.CLIP);
+  const startRow = sheet.getLastRow() + 1;
+  const target = sheet.getRange(startRow, 1, rows.length, headers.length);
+  qboStrApplyTypedFormats_(sheet, headers, startRow, rows.length);
+  target.setValues(rows);
+  target.setWrapStrategy(SpreadsheetApp.WrapStrategy.CLIP);
+}
+
+function qboStrApplyTypedFormats_(sheet, headers, startRow, rowCount) {
+  if (!rowCount) return;
+  const col = function(name) { return headers.indexOf(name) + 1; };
+  const format = function(name, pattern) {
+    const c = col(name);
+    if (c > 0) sheet.getRange(startRow, c, rowCount, 1).setNumberFormat(pattern);
+  };
+  format('Period_Key', '@');
+  ['Derived_At', 'Source_GL_Extracted_At', 'Detected_At'].forEach(function(name) {
+    format(name, 'yyyy-mm-dd hh:mm:ss');
+  });
+  ['Source_GL_Report_Start_Date', 'Source_GL_Report_End_Date', 'Recognition_Date', 'Period_Start', 'Period_End']
+    .forEach(function(name) { format(name, 'yyyy-mm-dd'); });
 }
 
 function qboStrNextSeq_(ss, periodKey) {
@@ -773,7 +793,8 @@ function qboStrReplaceCurrent_(ss, periodKey, rows) {
   if (sheet.getLastRow() > 1) {
     keep = sheet.getRange(2, 1, sheet.getLastRow() - 1, QBO_STR_HEADERS.length)
       .getValues()
-      .filter(function(row) { return String(row[0]) !== periodKey; });
+      .filter(function(row) { return String(row[0]) !== periodKey; })
+      .map(function(row) { const copy = row.slice(); copy[0] = String(copy[0] || ''); return copy; });
   }
 
   sheet.clearContents();
@@ -781,17 +802,12 @@ function qboStrReplaceCurrent_(ss, periodKey, rows) {
   sheet.setFrozenRows(1);
   sheet.getRange(1, 1, 1, QBO_STR_HEADERS.length).setFontWeight('bold');
 
-  const clean = rows.map(function(row) {
-    const copy = row.slice();
-    copy[1] = '';
-    copy[2] = '';
-    return copy;
-  });
-  const all = keep.concat(clean);
+  const all = keep.concat((rows || []).map(function(row) { return row.slice(); }));
   if (all.length) {
-    sheet.getRange(2, 1, all.length, QBO_STR_HEADERS.length).setValues(all);
-    sheet.getRange(2, 1, all.length, QBO_STR_HEADERS.length)
-      .setWrapStrategy(SpreadsheetApp.WrapStrategy.CLIP);
+    const target = sheet.getRange(2, 1, all.length, QBO_STR_HEADERS.length);
+    qboStrApplyTypedFormats_(sheet, QBO_STR_HEADERS, 2, all.length);
+    target.setValues(all);
+    target.setWrapStrategy(SpreadsheetApp.WrapStrategy.CLIP);
   }
 }
 
