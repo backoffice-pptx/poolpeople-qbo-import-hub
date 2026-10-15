@@ -1,0 +1,29 @@
+/** App 50 v1.5.232. Read-only live boundary inspection. No QBO requests,
+ * trigger mutations, watermark updates, ledger registration or replay. */
+function inspectQboNativeCdcCaptureOnlyReadinessV1232(){
+ const p=PropertiesService.getScriptProperties(),C=QBO_NATIVE_CDC_PRODUCTION,keys=[C.WATERMARK_PROPERTY_KEY,C.PAUSE_PROPERTY_KEY,C.STATE_PROPERTY_KEY,C.INGESTION_HANDOFF_PROPERTY_KEY,'QBO_PHASE_G_V1215_REPLAY_STATE'],before=Object.create(null);
+ keys.forEach(function(k){before[k]=p.getProperty(k);});
+ function parse(k){if(!before[k])return null;try{return JSON.parse(before[k]);}catch(e){throw new Error('V1232_INVALID_JSON '+k);}}
+ const state=parse(C.STATE_PROPERTY_KEY),replay=parse('QBO_PHASE_G_V1215_REPLAY_STATE'),pending=parse(C.INGESTION_HANDOFF_PROPERTY_KEY),now=new Date(),watermark=String(before[C.WATERMARK_PROPERTY_KEY]||''),wm=watermark?new Date(watermark):null,blockers=[];
+ if(!wm||isNaN(wm.getTime()))blockers.push('DURABLE_WATERMARK_MISSING_OR_INVALID');
+ const gap=wm&&!isNaN(wm.getTime())?(now.getTime()-wm.getTime())/86400000:null;
+ if(gap!==null&&gap<0)blockers.push('WATERMARK_IN_FUTURE');
+ if(gap!==null&&gap+C.OVERLAP_MINUTES/1440>=C.MAX_CDC_LOOKBACK_DAYS)blockers.push('ACQUISITION_WINDOW_OUTSIDE_CONFIGURED_LOOKBACK');
+ if(String(before[C.PAUSE_PROPERTY_KEY]||'').toLowerCase()!=='true')blockers.push('ACQUISITION_NOT_PAUSED');
+ if(state&&['RUNNING','INITIALIZING','FINALIZING'].indexOf(state.status)>=0)blockers.push('ACTIVE_OR_STRANDED_ACQUISITION_CYCLE');
+ if(state&&state.workerLeaseOwner&&Number(state.workerLeaseExpiresAtMs||0)>now.getTime())blockers.push('ACTIVE_ACQUISITION_WORKER_LEASE');
+ if(!replay||replay.status!=='INITIALIZED_REPLAY_DISABLED'||replay.replayAuthorized!==false||replay.replayWorkerEnabled!==false||Number(replay.observationCursor)!==0||Number(replay.processedObservationCount)!==0)blockers.push('PHASE_G_REPLAY_NOT_DISABLED');
+ const triggers=ScriptApp.getProjectTriggers().map(function(t){return {handler:t.getHandlerFunction(),triggerId:t.getUniqueId()};}),downstream=triggers.filter(function(t){return /dispatch.*Ingestion|runNext.*Ingestion|StateApplication|CanonicalV2Rebuild|watchQboCanonicalV2Rebuild/i.test(t.handler);});
+ if(downstream.length)blockers.push('DOWNSTREAM_TRIGGER_REVIEW_REQUIRED');
+ const result={version:'1.5.232',mode:'READ_ONLY',inspectedAt:now.toISOString(),acquisitionResumeAuthorized:false,productionPaused:String(before[C.PAUSE_PROPERTY_KEY]||'').toLowerCase()==='true',durableWatermark:watermark,gapDays:gap,configuredMaxLookbackDays:C.MAX_CDC_LOOKBACK_DAYS,configuredInitialLookbackDays:C.INITIAL_LOOKBACK_DAYS,overlapMinutes:C.OVERLAP_MINUTES,lookbackDeadlineUTC:wm&&!isNaN(wm.getTime())?new Date(wm.getTime()+C.MAX_CDC_LOOKBACK_DAYS*86400000-C.OVERLAP_MINUTES*60000).toISOString():null,entities:C.ENTITIES.slice(),cycle:state?{cycleId:state.cycleId,status:state.status,windowStart:state.windowStart,windowEnd:state.windowEnd,committedWatermark:state.committedWatermark,watermarkCommitted:state.watermarkCommitted,completedEntityCount:state.completedEntityCount,entityIndex:state.entityIndex,manifestFileId:state.manifestFileId,runFolderId:state.runFolderId,lastError:state.lastError,workerLeaseActive:!!(state.workerLeaseOwner&&Number(state.workerLeaseExpiresAtMs||0)>now.getTime())}:null,pendingHandoffCount:Array.isArray(pending)?pending.length:0,replay:replay?{status:replay.status,runId:replay.runId,replayAuthorized:replay.replayAuthorized,replayWorkerEnabled:replay.replayWorkerEnabled,observationCursor:replay.observationCursor,processedObservationCount:replay.processedObservationCount}:null,triggers:triggers,downstreamTriggers:downstream,blockers:blockers,implementationHashes:{}};
+ if(pending!==null&&!Array.isArray(pending))blockers.push('PENDING_HANDOFF_INVALID');
+ const methods={buildWindow:qboNativeCdcBuildWindow_,processEntity:qboNativeCdcProcessEntity_,finalizeCycle:qboNativeCdcFinalizeCycle_,publishHandoff:qboNativeCdcPublishIngestionHandoff_,resumeProduction:resumeQboNativeCdcProduction,registerIngestion:registerQboNativeCdcManifestForIngestion_};Object.keys(methods).forEach(function(k){result.implementationHashes[k]=qboNativeCdcSha256_(String(methods[k]));});
+ if(state&&state.manifestFileId){
+  const f=DriveApp.getFileById(String(state.manifestFileId)),text=f.getBlob().getDataAsString('UTF-8'),m=JSON.parse(text),entities=Array.isArray(m.entityEvidence)?m.entityEvidence:[],seen=Object.create(null),fail=[];
+  if(m.status!=='SUCCESS'||m.watermarkCommitted!==true||m.cycleId!==state.cycleId||m.committedWatermark!==watermark||m.windowEnd!==watermark||entities.length!==C.ENTITIES.length)fail.push('LAST_MANIFEST_BOUNDARY_NOT_COMMITTED_EXACT');
+  const summaries=entities.map(function(e){const type=String(e.entity||'');if(seen[type]||C.ENTITIES.indexOf(type)<0)fail.push('MANIFEST_ENTITY_SET_INVALID');seen[type]=true;if(e.status!=='SUCCESS'||!e.evidenceFileId||!e.payloadSha256)fail.push('MANIFEST_ENTITY_EVIDENCE_INCOMPLETE');const n=Number(e.returnedEntityCount);if(!Number.isInteger(n)||n<0||n>=1000)fail.push('LAST_MANIFEST_COUNT_REQUIRES_REVIEW '+type);return {entity:type,returnedEntityCount:e.returnedEntityCount,deletedEntityCount:e.deletedEntityCount,evidenceFileId:e.evidenceFileId,requestCompletedAt:e.requestCompletedAt,qboResponseTime:e.qboResponseTime};});
+  result.lastManifest={fileId:f.getId(),name:f.getName(),manifestSha256:qboNativeCdcSha256_(text),cycleId:m.cycleId,status:m.status,watermarkCommitted:m.watermarkCommitted,committedWatermark:m.committedWatermark,windowStart:m.windowStart,windowEnd:m.windowEnd,entityEvidence:summaries,failures:fail};fail.forEach(function(v){blockers.push(v);});
+ }else blockers.push('LAST_COMMITTED_MANIFEST_NOT_AVAILABLE_IN_CYCLE_STATE');
+ keys.forEach(function(k){if(p.getProperty(k)!==before[k])throw new Error('V1232_BOUNDARY_CHANGED_DURING_READ '+k);});
+ console.log('[NATIVE CDC CAPTURE READINESS V1232] | READ_ONLY | '+JSON.stringify(result));return result;
+}

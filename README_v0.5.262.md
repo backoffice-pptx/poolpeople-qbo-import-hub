@@ -1,0 +1,7 @@
+# v0.5.262 — sequence 6 isolated fresh capture
+Merge BOTH project folders into complete projects and push separately.
+App21: testSalesTaxSequence6FreshSetupV05262; prepareSalesTaxNewPairFreshCaptureV05262. Send PREPARED output before App50.
+App50: testSalesTaxIsolatedFreshCaptureV05262Contract; previewSalesTaxIsolatedFreshCaptureV05262; processSalesTaxIsolatedFreshCaptureV05262.
+Exact Summary e99d09d0-76df-4950-b73e-5d12351253ae, Detail ce4ab34d-da9f-4b7f-baac-485d0c988120, recorded pairing ae437254-2b6b-4405-8403-dac0e5f88715. RunV3_FRESH_PROOF_PREFILING_2609_SEQ6_1011, proofISOLATED_V3_FRESH_CAPTURE_2609_V05262.
+Setup checks exact new ingestion identities/hashes and unchanged production V2 run41a42c5a-7c86-489b-9955-17d1528cbae3, then revalidates physical source pair through exact loader. It creates a separate isolated request and does not relabel or overwrite production V2. Sequence5 capture IDs are reuse exclusions. Existing captures/manifests remain separate.
+Fresh September GL/TSD/Recognition acquisition delegates established App50 worker and normal evidence stores. Production control and isolated registry preservation are checked. No capture binding, Bank binding, freeze, filing approval or V3 activation occurs. Source reports show Custom taxable/tax removed; new capture must verify the intentional unapplied-payment test void. Payment typo verification remains a separate transaction-level proof. Legacy invoices/credits and zero settlements remain deferred for CPA discussion.

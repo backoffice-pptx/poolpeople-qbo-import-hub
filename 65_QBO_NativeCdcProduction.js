@@ -353,6 +353,7 @@ function qboNativeCdcProcessEntity_(state, entityName, entityRunId, workUnitId, 
     if (existing.hasNext()) throw new Error('Native CDC evidence reconciliation found duplicate files for cycle ' + state.cycleId + ', entity ' + entityName + '.');
     const priorMeta = qboNativeCdcReadEntityMeta_(state.cycleId, entityName);
     if (priorMeta && priorMeta.status === 'SUCCESS' && priorMeta.evidenceFileId === priorFile.getId()) {
+      qboNativeCdcV1233RequireCount_(Number(priorMeta.returnedEntityCount), entityName);
       console.log('[NATIVE CDC PROD] | ENTITY RECOVERED | cycle=' + state.cycleId + ' | entity=' + entityName + ' | evidenceFileId=' + priorFile.getId());
       return;
     }
@@ -361,6 +362,7 @@ function qboNativeCdcProcessEntity_(state, entityName, entityRunId, workUnitId, 
     let priorResponse;
     try { priorResponse = JSON.parse(priorJson); }
     catch (error) { throw new Error('Native CDC existing evidence is invalid JSON for ' + entityName + ': ' + error.message); }
+    qboNativeCdcV1233RequireResponse_(priorResponse, entityName);
     const priorEntities = qboNativeCdcProductionExtractEntities_(priorResponse, entityName);
     const priorDeleted = priorEntities.filter(function(entity) { return entity && String(entity.status || '').toLowerCase() === 'deleted'; }).length;
     qboNativeCdcWriteEntityMeta_(state.cycleId, entityName, {
@@ -377,6 +379,7 @@ function qboNativeCdcProcessEntity_(state, entityName, entityRunId, workUnitId, 
   }
 
   const requestStartedAt = new Date();
+  qboNativeCdcV1233RequireWindow_(state.windowStart);
   const response = qboNativeCdcRequestEntity_(entityName, new Date(state.windowStart), cfg.minorVersion);
   const requestCompletedAt = new Date();
   const entities = qboNativeCdcProductionExtractEntities_(response, entityName);
@@ -384,6 +387,8 @@ function qboNativeCdcProcessEntity_(state, entityName, entityRunId, workUnitId, 
   const liveCount = entities.length - deletedCount;
   const json = JSON.stringify(response, null, 2);
   const file = runFolder.createFile(fileName, json, 'application/json');
+  // Preserve the raw response even if completeness cannot be established.
+  qboNativeCdcV1233RequireResponse_(response, entityName);
   const meta = {
     cycleId: state.cycleId, entityRunId: entityRunId, workUnitId: workUnitId,
     continuationId: continuationId, entity: entityName, status: 'SUCCESS',
@@ -430,6 +435,7 @@ function qboNativeCdcFinalizeCycle_(workerId, cycleId) {
     QBO_NATIVE_CDC_PRODUCTION.ENTITIES.forEach(function(entityName) {
       const meta = qboNativeCdcReadEntityMeta_(cycleId, entityName);
       if (!meta || meta.status !== 'SUCCESS' || !meta.evidenceFileId) throw new Error('Native CDC finalize refused: missing successful evidence for ' + entityName + '.');
+      qboNativeCdcV1233RequireCount_(Number(meta.returnedEntityCount), entityName);
     });
     state.status = 'FINALIZING';
     state.completedAt = new Date().toISOString();
@@ -473,6 +479,10 @@ function qboNativeCdcFinalizeCycle_(workerId, cycleId) {
   qboNativeCdcPublishIngestionHandoff_(completed.cycleId, committedManifestFile.getId());
 }
 function qboNativeCdcPublishIngestionHandoff_(cycleId, manifestFileId) {
+  if (qboNativeCdcV1233CaptureOnly_()) {
+    console.log('[NATIVE CDC CAPTURE ONLY V1233] | HANDOFF_DEFERRED | ' + JSON.stringify({cycleId:cycleId,manifestFileId:manifestFileId,discoveryAuthority:'COMMITTED_NATIVE_CDC_MANIFESTS',ingestionRegistered:false}));
+    return {registered:false,captureOnly:true,manifestFileId:manifestFileId};
+  }
   const pending = {
     cycleId: String(cycleId || ''),
     manifestFileId: String(manifestFileId || ''),
@@ -491,6 +501,7 @@ function qboNativeCdcPublishIngestionHandoff_(cycleId, manifestFileId) {
 }
 
 function retryPendingQboNativeCdcIngestionRegistration() {
+  if (qboNativeCdcV1233CaptureOnly_()) return {action:'CAPTURE_ONLY_HANDOFFS_PRESERVED'};
   const queue = qboNativeCdcReadIngestionHandoffQueue_();
   if (!queue.length) {
     const empty = {action:'NO_PENDING_HANDOFF'};

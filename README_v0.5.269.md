@@ -1,0 +1,7 @@
+# v0.5.269 — post-void fresh capture with retained sequence6 liability pair
+Merge BOTH project folders into complete projects and push separately.
+App21: testSalesTaxSequence6PostVoidSetupV05269; prepareSalesTaxNewPairFreshCaptureV05269. Send PREPARED output before App50 acquisition.
+App50: testSalesTaxIsolatedFreshCaptureV05269Contract; previewSalesTaxIsolatedFreshCaptureV05269; processSalesTaxIsolatedFreshCaptureV05269.
+New runV3_FRESH_PROOF_PREFILING_2609_SEQ6_POSTVOID_1012, proofISOLATED_V3_FRESH_CAPTURE_2609_V05269. Retains verified Summarye99d09d0-76df-4950-b73e-5d12351253ae, Detailce4ab34d-da9f-4b7f-baac-485d0c988120 and recorded pairingae437254-2b6b-4405-8403-dac0e5f88715. No new liability ingestion is requested for the unapplied payment void alone.
+Payment69905 TEST162.38 was still unvoided in the earlier fresh sequence6 GL. Owner now reports actual void completed. This new capture must verify disappearance of its positive unapplied-income posting; no outcome is presumed. Earlier captures/manifests remain intact. Original sequence6 capture IDs are reuse exclusions.
+Existing production V2 run preserved. Exact liability physical pair revalidated. Setup creates separate isolated request; App50 delegates established GL/TSD/Recognition acquisition to normal evidence stores. No capture binding, Bank binding, manifest freeze, finding resolution, filing promotion or V3 activation. Legacy tax invoices/credits and zero settlements remain deferred for CPA discussion.

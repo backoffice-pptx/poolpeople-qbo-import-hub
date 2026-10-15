@@ -57,6 +57,7 @@ function pauseQboNativeCdcIngestion() {
 }
 
 function resumeQboNativeCdcIngestion() {
+  if (qboNativeCdcV1233CaptureOnly_()) throw new Error('NATIVE_CDC_CAPTURE_ONLY_INGESTION_DISABLED');
   installQboNativeCdcIngestionDispatcher();
   const after = listQboNativeCdcIngestionDispatcher();
   const result = {pipeline:'NATIVE_CDC', paused:false, activeTriggerCount:after.length};
@@ -65,6 +66,7 @@ function resumeQboNativeCdcIngestion() {
 }
 
 function installQboNativeCdcIngestionDispatcher() {
+  if (qboNativeCdcV1233CaptureOnly_()) throw new Error('NATIVE_CDC_CAPTURE_ONLY_INGESTION_DISABLED');
   removeQboNativeCdcIngestionDispatcher();
   ScriptApp.newTrigger(QBO_NATIVE_CDC_FORWARD_INGESTION_.DISPATCH_HANDLER)
     .timeBased()
@@ -94,6 +96,7 @@ function listQboNativeCdcIngestionDispatcher() {
 }
 
 function dispatchQboNativeCdcIngestion() {
+  if (qboNativeCdcV1233CaptureOnly_()) return {action:'CAPTURE_ONLY_INGESTION_DISABLED'};
   let handoff = null;
   try { handoff = retryPendingQboNativeCdcIngestionRegistration(); }
   catch (error) {
@@ -122,6 +125,7 @@ function registerLatestQboNativeCdcCycleForIngestion() {
 }
 
 function registerQboNativeCdcManifestForIngestion_(manifestFileId) {
+  if (qboNativeCdcV1233CaptureOnly_()) throw new Error('NATIVE_CDC_CAPTURE_ONLY_INGESTION_DISABLED');
   const file = DriveApp.getFileById(String(manifestFileId || '').trim());
   let manifest;
   try { manifest = JSON.parse(file.getBlob().getDataAsString('UTF-8')); }
@@ -325,6 +329,7 @@ function qboNativeCdcListRunFoldersForDiscovery_(root) {
 }
 
 function runNextQboNativeCdcIngestionWork() {
+  if (qboNativeCdcV1233CaptureOnly_()) return {action:'CAPTURE_ONLY_INGESTION_DISABLED'};
   const workerId = Utilities.getUuid();
   if (!qboNativeCdcClaimIngestionPipeline_(workerId)) {
     const busy = {action:'ALREADY_ACTIVE', workerId:workerId};
