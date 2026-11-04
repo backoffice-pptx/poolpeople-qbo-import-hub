@@ -1,0 +1,8 @@
+**/**
+!**/*.js
+!appsscript.json
+
+Archives/**
+docs/**
+tests/**
+tools/**
