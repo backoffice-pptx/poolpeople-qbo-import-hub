@@ -126,9 +126,10 @@ function writeExport_(config) {
     const sheet = withExportWriteLock_(
       config.sheetName,
       getExportSpreadsheetId_(config.sheetName),
-      function() {
-        const writtenSheet = writeExportUnlocked_(config);
+      function(assertBoundary) {
+        const writtenSheet = writeExportUnlocked_(config, assertBoundary);
 
+        assertBoundary('before_exporter_completion');
         registerQboExporterSheetCompletion_(config.sheetName);
 
         return writtenSheet;
@@ -393,12 +394,13 @@ function withExportWriteLock_(sheetName, workbookId, callback) {
   const pollMs = EXPORT_EXECUTION.WRITE_LEASE_POLL_MS;
   const deadline = Date.now() + waitMs;
   const leaseToken = Utilities.getUuid();
+  const invocationIdentity = QBO_V1297_ACTIVE_CONTEXT_;
   const leaseKey = buildExportWriteLeasePropertyKey_(normalizedWorkbookId);
 
   while (true) {
     if (tryAcquireExportWriteLease_(leaseKey, leaseToken, {
       sheetName: String(sheetName || ''),
-      schedulerContext: getQboSchedulerLeaseContext_()
+      schedulerContext: invocationIdentity ? qboV1297GetLeaseContext_() : {runId:'',exportKey:'',workerToken:''}
     })) {
       break;
     }
@@ -420,8 +422,12 @@ function withExportWriteLock_(sheetName, workbookId, callback) {
     Utilities.sleep(Math.min(pollMs, Math.max(1, deadline - Date.now())));
   }
 
+  const assertBoundary = function(boundary) {
+    return qboV1298AssertWriteBoundary_(leaseKey, leaseToken, invocationIdentity, boundary);
+  };
   try {
-    return callback();
+    assertBoundary('before_write_callback');
+    return callback(assertBoundary);
   } finally {
     releaseExportWriteLease_(leaseKey, leaseToken);
   }
@@ -476,13 +482,9 @@ function tryAcquireExportWriteLease_(leaseKey, leaseToken, metadata) {
       }
     }
 
-    if (
-      existing &&
-      String(existing.token || '') !== String(leaseToken) &&
-      Number(existing.expiresAt || 0) > now
-    ) {
-      return false;
-    }
+    // V1294 no-steal retained: an expired or malformed lease is NOT
+    // evidence of original execution termination.
+    if (raw) return false;
 
     const schedulerContext = metadata && metadata.schedulerContext
       ? metadata.schedulerContext
@@ -495,7 +497,8 @@ function tryAcquireExportWriteLease_(leaseKey, leaseToken, metadata) {
       sheetName: metadata && metadata.sheetName ? metadata.sheetName : '',
       runId: schedulerContext.runId || '',
       exportKey: schedulerContext.exportKey || '',
-      workerToken: schedulerContext.workerToken || ''
+      workerToken: schedulerContext.workerToken || '',
+      index: Number.isInteger(schedulerContext.index) ? schedulerContext.index : null
     }));
     return true;
   } finally {
@@ -602,7 +605,8 @@ function releaseExportWriteLease_(leaseKey, leaseToken) {
  * Performs the actual sheet mutation after writeExport_() has acquired the
  * shared workbook-write lock.
  */
-function writeExportUnlocked_(config) {
+function writeExportUnlocked_(config, assertBoundary) {
+  if (typeof assertBoundary !== 'function') throw new Error('V1298_WRITE_GUARD_REQUIRED');
   const sheetName = config.sheetName;
   const headers = config.headers;
   const rows = config.rows || [];
@@ -638,6 +642,7 @@ function writeExportUnlocked_(config) {
   const maxColumnWidth =
     config.maxColumnWidth || 300;
 
+  assertBoundary('before_1_mutation');
   const sheetState = prepareExportSheet_(
     sheetName,
     rows.length,
@@ -646,12 +651,15 @@ function writeExportUnlocked_(config) {
   const sheet = sheetState.sheet;
   logWriteStep_('sheet prepare');
 
+  assertBoundary('before_2_mutation');
   writeRows_(sheet, rows);
   logWriteStep_(`writeRows total (${rows.length} rows)`);
 
+  assertBoundary('before_3_mutation');
   writeExportHeader_(sheet, headers);
   logWriteStep_('header values');
 
+  assertBoundary('before_4_mutation');
   formatExportHeader_(
     sheet,
     headers,
@@ -660,6 +668,7 @@ function writeExportUnlocked_(config) {
   logWriteStep_('header formatting');
 
   if (useFilter) {
+  assertBoundary('before_5_mutation');
     applyExportFilter_(
       sheet,
       headers.length,
@@ -669,6 +678,7 @@ function writeExportUnlocked_(config) {
   }
 
   if (autoResize && !isLargeExport) {
+  assertBoundary('before_6_mutation');
     resizeExportColumns_(
       sheet,
       headers.length,
@@ -677,6 +687,7 @@ function writeExportUnlocked_(config) {
     logWriteStep_('auto resize');
   }
 
+  assertBoundary('before_7_mutation');
   applyExportColumnWidths_(
     sheet,
     config.columnWidths || {}
@@ -684,6 +695,7 @@ function writeExportUnlocked_(config) {
   logWriteStep_('configured column widths');
 
   if (config.numberFormats) {
+  assertBoundary('before_8_mutation');
     applyExportNumberFormats_(
       sheet,
       config.numberFormats,
@@ -692,6 +704,7 @@ function writeExportUnlocked_(config) {
     logWriteStep_('number formats');
   }
 
+  assertBoundary('before_9_mutation');
   clearStaleExportContent_(
     sheet,
     sheetState.previousLastRow,

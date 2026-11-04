@@ -56,6 +56,8 @@ function getDailyQboSchedulerLock_() {
  * ============================================================================
  */
 
+const QBO_DAILY_V1279_PAUSE_KEY = 'QBO_DAILY_V1279_PAUSED';
+
 const DAILY_QBO_EXPORT_ORDER = Object.freeze([
   'PREFERENCES',
   'CLASSES',
@@ -268,6 +270,10 @@ function removeDailyQboExportTriggers() {
  * isolated exporter execution.
  */
 function startDailyQboExportSchedule() {
+  if (PropertiesService.getScriptProperties().getProperty(QBO_DAILY_V1279_PAUSE_KEY) === 'true') {
+    console.warn('[DAILY V1279] | STARTER BLOCKED | scheduler paused');
+    return;
+  }
   // Validate all read-only production prerequisites before queue state is
   // created. A failed preflight therefore cannot leave a partially initialized
   // daily run or launch any exporter.
@@ -292,7 +298,9 @@ function startDailyQboExportSchedule() {
   }
 
   if (existingRunId && existingIndex !== null) {
-    if (existingActiveState && !isDailyQboWorkerStateStale_(existingActiveState)) {
+    if (existingActiveState) {
+      // V1280: age is not evidence that the Apps Script execution has ended.
+      // Preserve ownership and defer recovery until externally verified.
       console.log(
         '[SCHEDULE] | STARTER PRESERVE ACTIVE RUN | runId=' + existingRunId +
         ' | export=' + (existingActiveState.exportKey || '') +
@@ -328,7 +336,7 @@ function startDailyQboExportSchedule() {
             'history reconstruction.'
           );
         }
-        if (activeState && !isDailyQboWorkerStateStale_(activeState)) {
+        if (activeState) { // V1280: fail closed; no age-based takeover
           throw new Error(
             'Daily starter aborted recovery because another scheduler worker became active.'
           );
@@ -441,6 +449,10 @@ function startDailyQboExportSchedule() {
  * new exporter attempt for the same run and position.
  */
 function resumeQboExportSchedule() {
+  if (PropertiesService.getScriptProperties().getProperty(QBO_DAILY_V1279_PAUSE_KEY) === 'true') {
+    console.warn('[DAILY V1279] | RESUME BLOCKED | scheduler paused');
+    return;
+  }
   validateQboExportPreflight_();
 
   // Phase 1: stop the transient chain and capture the queue identity while
@@ -511,7 +523,7 @@ function resumeQboExportSchedule() {
     const currentIndex = props.getProperty(DAILY_QBO_QUEUE_PROPERTIES.INDEX);
     const activeState = getActiveDailyQboWorkerState_(props);
 
-    if (activeState && !isDailyQboWorkerStateStale_(activeState)) {
+    if (activeState) { // V1280: fail closed; no age-based takeover
       throw new Error(
         'Cannot resume run ' + runId + ': another scheduler worker is active for ' +
         (activeState.exportKey || 'unknown export') + '.'
@@ -584,6 +596,12 @@ function runNextScheduledQboExport() {
 
   const runId = claim.runId;
 
+  // V1285: persist claim provenance before any exporter is invoked.
+  // This is a guarded checkpoint, not proof that an exporter has completed.
+  if (!claim.completeOnly) {
+    qboDailyV1284Checkpoint_(claim, 'CLAIMED', null);
+  }
+
   if (claim.completeOnly) {
     completeDailyQboExportSchedule_(runId, claim.failedCount);
     return;
@@ -628,12 +646,18 @@ function runNextScheduledQboExport() {
     recordQboScheduledExportStart_(runId, index + 1, entry, exportStartedAt);
   }, 'export start', runId, exportKey);
 
+  // V1285: mark exporter entry after claim validation. No checkpoint is
+  // advanced on failed or interrupted exports.
+  qboDailyV1284Checkpoint_(claim, 'EXPORT_STARTED', null);
+
   let exportError = null;
   let retryableError = false;
   let masterBackupMetadata = null;
 
   try {
-    invokeScheduledQboExporter_(entry.exportFunctionName);
+    qboV1297WithWorkerContext_(claim, function() {
+      invokeScheduledQboExporter_(entry.exportFunctionName);
+    });
     masterBackupMetadata = consumeQboExporterMasterBackupMetadata_(exportKey);
 
     console.log(
@@ -709,6 +733,27 @@ function runNextScheduledQboExport() {
     }
   }
 
+  // V1289: successful exporter output is not sufficient for queue advancement.
+  // Completion history must be durably readable and match the exact attempt.
+  // This boundary is intentionally OUTSIDE the exporter try/catch: a history
+  // failure must not be misclassified as a failed QBO export.
+  if (!exportError) {
+    try {
+      const proof = qboDailyV1289VerifyCompletion_(claim, exportStartedAt, masterBackupMetadata);
+      qboDailyV1284Checkpoint_(claim, 'SNAPSHOT_RECORDED', {snapshotId: proof.snapshotId});
+      console.log('[DAILY V1289] | SNAPSHOT VERIFIED | runId=' + runId +
+        ' | export=' + exportKey + ' | historyRow=' + proof.row +
+        ' | snapshotId=' + proof.snapshotId);
+    } catch (proofError) {
+      // Preserve claim and queue for manual reconciliation; do not retry or
+      // reclassify an already-successful exporter as ERROR.
+      console.error('[DAILY V1289] | COMPLETION HOLD | runId=' + runId +
+        ' | export=' + exportKey + ' | claimPreserved=true' +
+        ' | reason=' + (proofError && proofError.message || proofError));
+      return;
+    }
+  }
+
   const finalization = finalizeDailyQboWorkerClaim_(
     claim,
     failedCount,
@@ -725,7 +770,11 @@ function runNextScheduledQboExport() {
   } else if (finalization.completeRun) {
     completeDailyQboExportSchedule_(runId, failedCount);
   } else {
-    scheduleNextQboExportTrigger_();
+    if (PropertiesService.getScriptProperties().getProperty(QBO_DAILY_V1279_PAUSE_KEY) !== 'true') {
+      scheduleNextQboExportTrigger_();
+    } else {
+      console.warn('[DAILY V1279] | NEXT SUPPRESSED | scheduler paused');
+    }
   }
 
   if (exportError && !retryableError) {
@@ -745,6 +794,10 @@ function claimDailyQboWorker_() {
 
   try {
     const props = PropertiesService.getScriptProperties();
+    if (props.getProperty(QBO_DAILY_V1279_PAUSE_KEY) === 'true') {
+      console.warn('[DAILY V1279] | CLAIM BLOCKED | scheduler paused');
+      return null;
+    }
     const runId = props.getProperty(DAILY_QBO_QUEUE_PROPERTIES.RUN_ID);
     const indexValue = props.getProperty(DAILY_QBO_QUEUE_PROPERTIES.INDEX);
     const failedCountValue = props.getProperty(
@@ -780,23 +833,25 @@ function claimDailyQboWorker_() {
     let recoveredStaleWorker = false;
 
     if (activeState) {
-      if (!isDailyQboWorkerStateStale_(activeState)) {
-        console.log(
-          '[SCHEDULE] | WORKER DEFER | runId=' + runId +
-          ' | activeExport=' + (activeState.exportKey || '') +
-          ' | activeAgeMs=' + (Date.now() - activeState.startedAtMs)
-        );
-        scheduleNextQboExportTrigger_();
-        return null;
-      }
-
-      recoveredStaleWorker = true;
+      // V1280: an old timestamp does not prove a worker is terminated.
+      // Never clear or replace a claim automatically. This also avoids
+      // recording an actively running export as INTERRUPTED.
       console.warn(
-        '[SCHEDULE] | WORKER STALE | runId=' + runId +
-        ' | activeExport=' + (activeState.exportKey || '') +
-        ' | activeAgeMs=' + (Date.now() - activeState.startedAtMs)
+        '[DAILY V1280] | OWNERSHIP PRESERVED | runId=' + runId +
+        ' | export=' + (activeState.exportKey || '') +
+        ' | ageMs=' + (Date.now() - activeState.startedAtMs) +
+        ' | recovery=MANUAL_VERIFICATION_REQUIRED'
       );
-      clearActiveDailyQboWorkerState_(props);
+      // V1281: fail closed without an unbounded self-rearming watchdog.
+      // An active claim is not proof of termination, even if its age exceeds
+      // the worker budget. Recovery requires an independently verified stop.
+      // Preserve the claim, queue index, history, and evidence unchanged.
+      console.warn(
+        '[DAILY V1281] | RECOVERY HELD | runId=' + runId +
+        ' | action=VERIFY_EXECUTION_TERMINATED_THEN_CONTROLLED_RECOVERY' +
+        ' | newContinuationScheduled=false'
+      );
+      return null;
     }
 
     const exportKey = DAILY_QBO_EXPORT_ORDER[index];
@@ -804,6 +859,10 @@ function claimDailyQboWorker_() {
     if (!entry) {
       throw new Error('Daily schedule references unknown export key: ' + exportKey + '.');
     }
+
+    // V1338: Under the existing scheduler lock, reject a previously completed
+    // position before creating a worker token or arming a watchdog.
+    qboDailyV1338AssertClaimable_(runId, index, exportKey);
 
     const token = Utilities.getUuid();
     const startedAt = new Date().toISOString();
@@ -857,12 +916,20 @@ function finalizeDailyQboWorkerClaim_(claim, failedCount, retrySamePosition) {
       return { claimLost: true, completeRun: false };
     }
 
+    nextIndex = retrySamePosition ? claim.index : claim.index + 1;
+
+    // V1290: a successful export must have durable, matching completion
+    // checkpoint evidence before the queue index or claim is changed.
+    // Checkpoint and queue mutation share the already-held scheduler lock.
+    // No nested LockService acquisition is permitted here.
+    if (!retrySamePosition && normalizedFailedCount === Number(claim.failedCount || 0)) {
+      qboDailyV1290CommitAdvanceUnderLock_(props, claim, nextIndex);
+    }
+
     props.setProperty(
       DAILY_QBO_QUEUE_PROPERTIES.FAILED_COUNT,
       String(normalizedFailedCount)
     );
-
-    nextIndex = retrySamePosition ? claim.index : claim.index + 1;
     props.setProperty(DAILY_QBO_QUEUE_PROPERTIES.INDEX, String(nextIndex));
     clearActiveDailyQboWorkerState_(props);
   } finally {
@@ -915,12 +982,8 @@ function isDailyQboWorkerStateStale_(activeState) {
 
 
 function isDailyQboWorkerStateStaleAt_(activeState, nowMs) {
-  if (!activeState || !activeState.startedAtMs) {
-    return true;
-  }
-
-  return Number(nowMs) - activeState.startedAtMs >=
-    DAILY_EXPORT_SCHEDULE.WORKER_STALE_MS;
+  // V1280 fail-closed contract: age is diagnostic only, not takeover authority.
+  return false;
 }
 
 

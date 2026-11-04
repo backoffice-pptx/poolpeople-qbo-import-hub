@@ -197,6 +197,16 @@ function resumeDailyFullExportAdministrativeSchedule() {
         .create();
     }
 
+    /* Reconcile the legacy execution gate with governed RESUME. */
+    const dailyProps = PropertiesService.getScriptProperties();
+    if (dailyProps.getProperty(DAILY_QBO_QUEUE_PROPERTIES.RUN_ID)) {
+      throw new Error('DAILY_FULL_EXPORT_ADMIN_RESUME_ACTIVE_QUEUE_BLOCK');
+    }
+    if (getActiveDailyQboWorkerState_(dailyProps)) {
+      throw new Error('DAILY_FULL_EXPORT_ADMIN_RESUME_ACTIVE_WORKER_BLOCK');
+    }
+    dailyProps.deleteProperty(QBO_DAILY_V1279_PAUSE_KEY);
+
     qboPipelineWriteAdministrativeState_(
       QBO_PIPELINE_IDS_.DAILY_FULL_EXPORT,
       'ENABLED',
@@ -222,4 +232,40 @@ function resumeDailyFullExportAdministrativeSchedule() {
   console.log('[PIPELINE CONTROL] | DAILY ADMIN RESUMED | ' +
     JSON.stringify(result, null, 2));
   return result;
+}
+
+/**
+ * One-time production repair for an already ENABLED governed schedule whose
+ * legacy V1279 pause gate was left set. Does not start exports or alter triggers.
+ */
+function reconcileDailyFullExportLegacyPauseGate() {
+  qboDailyFullExportAssertGovernedAuthority_();
+  const lock = getDailyQboSchedulerLock_();
+  lock.waitLock(30000);
+  try {
+    const governed = qboPipelineReadAdministrativeState_(
+      QBO_PIPELINE_IDS_.DAILY_FULL_EXPORT
+    );
+    const partition = qboDailyFullExportTriggerPartition_();
+    const props = PropertiesService.getScriptProperties();
+    if (!governed.initialized || governed.administrativeState !== 'ENABLED') {
+      throw new Error('DAILY_LEGACY_GATE_REPAIR_REQUIRES_GOVERNED_ENABLED');
+    }
+    if (partition.starters.length !== 1 || partition.continuations.length !== 0) {
+      throw new Error('DAILY_LEGACY_GATE_REPAIR_REQUIRES_SINGLE_IDLE_STARTER');
+    }
+    if (props.getProperty(DAILY_QBO_QUEUE_PROPERTIES.RUN_ID) ||
+        getActiveDailyQboWorkerState_(props)) {
+      throw new Error('DAILY_LEGACY_GATE_REPAIR_REQUIRES_IDLE_QUEUE');
+    }
+    const wasPaused = props.getProperty(QBO_DAILY_V1279_PAUSE_KEY) === 'true';
+    if (wasPaused) props.deleteProperty(QBO_DAILY_V1279_PAUSE_KEY);
+    const result = {status: wasPaused ? 'LEGACY_GATE_CLEARED' : 'ALREADY_CLEAR',
+      governedState: 'ENABLED', starterCount: 1, queuePreserved: true,
+      triggersPreserved: true, runStarted: false};
+    console.log('[DAILY LEGACY GATE] | RECONCILED | ' + JSON.stringify(result));
+    return result;
+  } finally {
+    lock.releaseLock();
+  }
 }
