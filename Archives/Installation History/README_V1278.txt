@@ -1,0 +1,1 @@
+Install the JS file as a new Apps Script source file. Run previewQboDailySchedulerReconciliationV1278 manually. READ ONLY. No recovery or finalization is performed. Inspect JSON and share it before any changes. Based on Oct 23 source; verify deployed symbols remain compatible.

@@ -1,0 +1,1 @@
+Replace 24_TriggerManagement.js ONLY if deployed source matches Oct 23 snapshot. Requires V1278 installed. Run quiesceQboDailyV1279, wait for active worker completion, previewQboDailyV1279, then finalizeQboDailyV1279 only after verifying no active claim. Leave paused until separate scheduler hardening. Do not run unpause automatically. No Phase G changes.

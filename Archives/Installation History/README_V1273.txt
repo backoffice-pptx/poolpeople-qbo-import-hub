@@ -1,0 +1,1 @@
+V1273: install 4221_QBO_PhaseGIndexJournalRecoveryV1273.js; run resumeQboPhaseGIndexIntegrityAfterJournalV1273 once. Strictly scoped to the observed V1272 checkpoint and journal. No production workbook writes. If any check fails, stop and share log.
