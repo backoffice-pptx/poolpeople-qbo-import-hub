@@ -101,7 +101,8 @@ const QBO_STR_LOG_HEADERS = Object.freeze([
   'Status',
   'Row_Count',
   'Change_Count',
-  'Error'
+  'Error',
+  'Snapshot_Sequence'
 ]);
 
 function provisionQboSalesTaxRecognitionDataWorkbook() {
@@ -347,7 +348,8 @@ function exportQboSalesTaxRecognitionForPeriod(startDate, endDate, expectedGlExt
           'SUCCESS',
           snapshotRows.length,
           changes.length,
-          ''
+          '',
+          seq
         ]]
       );
 
@@ -724,7 +726,7 @@ function qboStrEnsureWorkbook_(ss) {
   qboStrHeader_(ss.getSheetByName(QBO_SALES_TAX_RECOGNITION.CURRENT_SHEET), QBO_STR_HEADERS);
   qboStrHeader_(ss.getSheetByName(QBO_SALES_TAX_RECOGNITION.SNAPSHOT_SHEET), QBO_STR_HEADERS);
   qboStrHeader_(ss.getSheetByName(QBO_SALES_TAX_RECOGNITION.CHANGES_SHEET), QBO_STR_CHANGE_HEADERS);
-  qboStrHeader_(ss.getSheetByName(QBO_SALES_TAX_RECOGNITION.LOG_SHEET), QBO_STR_LOG_HEADERS);
+  qboRev631EnsureLogSchema_(ss.getSheetByName(QBO_SALES_TAX_RECOGNITION.LOG_SHEET), QBO_STR_LOG_HEADERS);
 }
 
 function qboStrHeader_(sheet, headers) {
@@ -761,14 +763,7 @@ function qboStrApplyTypedFormats_(sheet, headers, startRow, rowCount) {
 }
 
 function qboStrNextSeq_(ss, periodKey) {
-  const sheet = ss.getSheetByName(QBO_SALES_TAX_RECOGNITION.SNAPSHOT_SHEET);
-  if (sheet.getLastRow() < 2) return 1;
-  const values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 2).getValues();
-  let max = 0;
-  values.forEach(function(row) {
-    if (String(row[0]) === periodKey) max = Math.max(max, Number(row[1]) || 0);
-  });
-  return max + 1;
+  return qboRev631NextSequence_(ss,QBO_SALES_TAX_RECOGNITION.SNAPSHOT_SHEET,QBO_SALES_TAX_RECOGNITION.LOG_SHEET,periodKey,QBO_STR_LOG_HEADERS);
 }
 
 function qboStrLatest_(ss, periodKey) {

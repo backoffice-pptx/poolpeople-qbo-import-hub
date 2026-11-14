@@ -1495,7 +1495,21 @@ function appendQboGeneralLedgerRun_(spreadsheet, row) {
   const extractedAtCell = sheet.getRange(targetRow, 2);
   extractedAtCell.setNumberFormat('yyyy-mm-dd hh:mm:ss');
   SpreadsheetApp.flush();
-  const storedExtractedAt = extractedAtCell.getValue();
+  let storedExtractedAt = extractedAtCell.getValue();
+  // Sheets may persist the other fields while leaving a Date cell blank.
+  // Repair only that narrowly verified condition; never overwrite a conflicting date.
+  if (storedExtractedAt === '' || storedExtractedAt === null) {
+    const persisted = sheet.getRange(targetRow, 1, 1, writeRow.length).getValues()[0];
+    const otherFieldsMatch = writeRow.every(function(value, i) {
+      if (i === 1) return true;
+      return qboGlRegistryCellEqualV1301_(persisted[i], value);
+    });
+    if (!otherFieldsMatch) throw new Error('GL_RUN_REGISTRY_PARTIAL_WRITE_CONFLICT: run=' + String(row[0] || ''));
+    extractedAtCell.setValue(extractedAt);
+    extractedAtCell.setNumberFormat('yyyy-mm-dd hh:mm:ss');
+    SpreadsheetApp.flush();
+    storedExtractedAt = extractedAtCell.getValue();
+  }
   if (!qboGeneralLedgerTimestampsMatchToSecond_(storedExtractedAt, extractedAt)) {
     throw new Error('GL_RUN_REGISTRY_EXTRACTED_AT_WRITE_MISMATCH: run=' + String(row[0] || ''));
   }
